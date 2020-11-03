@@ -22,8 +22,8 @@
 
 
 //      DEFINES       //
-#define SDA_PIN GPIO_NUM_15
-#define SCL_PIN GPIO_NUM_2
+#define SDA_PIN GPIO_NUM_25
+#define SCL_PIN GPIO_NUM_21
 #define TAG_BME280 "BME280"
 #define I2C_MASTER_ACK 0
 #define I2C_MASTER_NACK 1
@@ -41,6 +41,7 @@
 #define I2C_MASTER_RX_BUF_DISABLE 0                           /*!< I2C master doesn't need buffer */
 #define I2C_MASTER_FREQ_HZ        100000                      /*!< I2C master clock frequency */        //CONFIG_I2C_MASTER_FREQUENCY
 
+#define I2C_DEVICE_ADDRESS BME280_I2C_ADDR_PRIM             // options = BME280_I2C_ADDR_PRIM or BME280_I2C_ADDR_SEC
 
 typedef uint64_t u64;
 typedef uint32_t u32;
@@ -74,7 +75,7 @@ static esp_err_t i2c_master_read_slave(i2c_port_t i2c_num, uint8_t *data_rd, siz
     }
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BME280_I2C_ADDR_PRIM << 1) | READ_BIT, ACK_CHECK_EN);
+    i2c_master_write_byte(cmd, (I2C_DEVICE_ADDRESS << 1) | READ_BIT, ACK_CHECK_EN);
     if (size > 1) {
         i2c_master_read(cmd, data_rd, size - 1, ACK_VAL);
     }
@@ -89,7 +90,7 @@ static esp_err_t i2c_master_write_slave(i2c_port_t i2c_num, uint8_t *data_wr, si
 {
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BME280_I2C_ADDR_PRIM << 1) | WRITE_BIT, ACK_CHECK_EN);
+    i2c_master_write_byte(cmd, (I2C_DEVICE_ADDRESS << 1) | WRITE_BIT, ACK_CHECK_EN);
     i2c_master_write(cmd, data_wr, size, ACK_CHECK_EN);
     i2c_master_stop(cmd);
     esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_RATE_MS);
@@ -98,9 +99,42 @@ static esp_err_t i2c_master_write_slave(i2c_port_t i2c_num, uint8_t *data_wr, si
 }
 */
 
+
+int8_t BME280_I2C_bus_read( uint8_t reg_addr, uint8_t *reg_data, uint8_t cnt)
+{   
+    //printf("\n read function 2 is called\n");
+    int8_t espRc = 0;
+
+	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+
+	i2c_master_start(cmd);
+	i2c_master_write_byte(cmd, (I2C_DEVICE_ADDRESS << 1) | I2C_MASTER_WRITE, true);
+	i2c_master_write_byte(cmd, reg_addr, true);
+
+	i2c_master_start(cmd);
+	i2c_master_write_byte(cmd, (I2C_DEVICE_ADDRESS << 1) | I2C_MASTER_READ, true);
+
+	if (cnt > 1) {
+		i2c_master_read(cmd, reg_data, cnt-1, I2C_MASTER_ACK);
+	}
+	i2c_master_read_byte(cmd, reg_data+cnt-1, I2C_MASTER_NACK);
+	i2c_master_stop(cmd);
+
+	espRc = i2c_master_cmd_begin(I2C_NUM_0, cmd, 10/portTICK_PERIOD_MS);
+	i2c_cmd_link_delete(cmd);
+    if (espRc == ESP_OK) {
+		return 0;
+	} else {
+		return 1;
+	}
+
+
+}
 int8_t user_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf_ptr)
 {
+    printf("\n read function is called\n");
     int8_t rslt = 0; /* Return 0 for Success, non-zero for failure */
+    //intf_ptr = I2C_DEVICE_ADDRESS;
 
     if (len == 0) 
         {
@@ -108,7 +142,7 @@ int8_t user_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *in
         }
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BME280_I2C_ADDR_PRIM << 1) | READ_BIT, ACK_CHECK_EN);
+    i2c_master_write_byte(cmd, (I2C_DEVICE_ADDRESS << 1) | READ_BIT, ACK_CHECK_EN);
     if (len > 1)
         {
             i2c_master_read(cmd, reg_data, len - 1, ACK_VAL);
@@ -122,16 +156,21 @@ int8_t user_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *in
         {
             return rslt;
         }
-        else return 1;
+        else
+        {
+            printf("\nfailed in read function\n");
+             return 1;
+        }
 }
 int8_t user_i2c_write(uint8_t reg_addr, const uint8_t *data, uint32_t len, void *intf_ptr)
 {
+    printf("\n write function is called\n");
     int8_t rslt = 0;        // return 0 for sucess non 0 for failure
-    //intf_ptr = &reg_addr;
+    //intf_ptr = I2C_DEVICE_ADDRESS;
 
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BME280_I2C_ADDR_PRIM << 1) | WRITE_BIT, ACK_CHECK_EN);
+    i2c_master_write_byte(cmd, (I2C_DEVICE_ADDRESS << 1) | WRITE_BIT, ACK_CHECK_EN);
     i2c_master_write(cmd, data, len, ACK_CHECK_EN);
     i2c_master_stop(cmd);
     esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, 1000 / portTICK_RATE_MS);
@@ -140,11 +179,20 @@ int8_t user_i2c_write(uint8_t reg_addr, const uint8_t *data, uint32_t len, void 
     {
         return rslt;
     }
-    else return 1;
+    else
+    {
+        printf("failed in write function");
+        return 1;
+    }
 }
 void user_delay_us(uint32_t period, void *intf_ptr)
 {
     vTaskDelay( period / portTICK_PERIOD_MS);
+}
+
+void user_delay2_us(uint32_t period, void *intf_ptr)    // test to see if delay was to long
+{
+    ets_delay_us(period);
 }
 
 void print_sensor_data(struct bme280_data *comp_data)
@@ -182,11 +230,43 @@ int8_t stream_sensor_data_normal_mode(struct bme280_dev *dev)
 		dev->delay_us(70, dev->intf_ptr);
 		rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
 		print_sensor_data(&comp_data);
+        printf("Temperature, Pressure, Humidity\r\n");
 	}
 
 	return rslt;
 }
+int8_t stream_sensor_data_forced_mode(struct bme280_dev *dev)
+{
+    int8_t rslt;
+    uint8_t settings_sel;
+	uint32_t req_delay;
+    struct bme280_data comp_data;
 
+    /* Recommended mode of operation: Indoor navigation */
+    dev->settings.osr_h = BME280_OVERSAMPLING_1X;
+    dev->settings.osr_p = BME280_OVERSAMPLING_16X;
+    dev->settings.osr_t = BME280_OVERSAMPLING_2X;
+    dev->settings.filter = BME280_FILTER_COEFF_16;
+
+    settings_sel = BME280_OSR_PRESS_SEL | BME280_OSR_TEMP_SEL | BME280_OSR_HUM_SEL | BME280_FILTER_SEL;
+
+    rslt = bme280_set_sensor_settings(settings_sel, dev);
+	
+	/*Calculate the minimum delay required between consecutive measurement based upon the sensor enabled
+     *  and the oversampling configuration. */
+    req_delay = bme280_cal_meas_delay(&dev->settings);
+
+    printf("Temperature, Pressure, Humidity\r\n");
+    /* Continuously stream sensor data */
+    while (1) {
+        rslt = bme280_set_sensor_mode(BME280_FORCED_MODE, dev);
+        /* Wait for the measurement to complete and print data @25Hz */
+        dev->delay_us(req_delay, dev->intf_ptr);
+        rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
+        print_sensor_data(&comp_data);
+    }
+    return rslt;
+}
 
 void print_chip_info()
 {
@@ -219,18 +299,17 @@ void print_chip_info()
 
 void app_main(void)
 {
-
     //i2c_master_init();
     ESP_ERROR_CHECK(i2c_master_init());
     print_chip_info();
 
     struct bme280_dev dev;
     int8_t rslt = BME280_OK;
-    uint8_t dev_addr = BME280_I2C_ADDR_PRIM;
+    uint8_t dev_addr = I2C_DEVICE_ADDRESS;
 
     dev.intf_ptr = &dev_addr;
     dev.intf = BME280_I2C_INTF;
-    dev.read = user_i2c_read;
+    dev.read = BME280_I2C_bus_read;
     dev.write = user_i2c_write;
     dev.delay_us = user_delay_us;
     rslt = bme280_init(&dev);
@@ -241,6 +320,6 @@ void app_main(void)
         fprintf(stderr, "Failed to stream sensor data (code %+d).\n", rslt);
         exit(1);
     }
-
+    printf("\n program over...........");
 
 }
