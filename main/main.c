@@ -19,7 +19,6 @@
 #include "esp_log.h"
 
 #include "sdkconfig.h"
-
 #include "bme280.h"
 
 
@@ -40,8 +39,16 @@
 #define I2C_DEVICE_ADDRESS BME280_I2C_ADDR_PRIM               // options = BME280_I2C_ADDR_PRIM or BME280_I2C_ADDR_SEC
 
 
-
 //      FUNCTIONS       //
+
+void delay_ms(uint32_t period, void *intf_ptr)
+{
+    vTaskDelay( period / portTICK_PERIOD_MS);
+}
+void delay_us(uint32_t period, void *intf_ptr)   
+{
+    ets_delay_us(period);
+}
 
 esp_err_t i2c_master_init()
 {
@@ -56,8 +63,7 @@ esp_err_t i2c_master_init()
 	i2c_param_config(I2C_NUM_0, &i2c_config);
 	return i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0);
 }
-
-int8_t user_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf_ptr)
+int8_t    bme280_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf_ptr)
 {
   //  printf("\n read function is called\n");
     int8_t rslt = 0; /* Return 0 for Success, non-zero for failure */
@@ -90,7 +96,7 @@ int8_t user_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *in
         i2c_cmd_link_delete(cmd);
         return rslt;
 }
-int8_t user_i2c_write(uint8_t reg_addr, const uint8_t *data, uint32_t len, void *intf_ptr)
+int8_t    bme280_i2c_write(uint8_t reg_addr, const uint8_t *data, uint32_t len, void *intf_ptr)
 {
    // printf("\n write function is called\n"); 
     int8_t rslt = 0;        // return 0 for sucess non 0 for failure
@@ -117,16 +123,19 @@ int8_t user_i2c_write(uint8_t reg_addr, const uint8_t *data, uint32_t len, void 
     }
 }
 
-void user_delay_ms(uint32_t period, void *intf_ptr)
+int8_t bme280_setup(struct bme280_dev *dev)
 {
-    vTaskDelay( period / portTICK_PERIOD_MS);
+    int8_t rslt;
+    uint8_t dev_addr = I2C_DEVICE_ADDRESS;
+    dev->intf_ptr = &dev_addr;
+    dev->intf = BME280_I2C_INTF;
+    dev->read = bme280_i2c_read;
+    dev->write = bme280_i2c_write;
+    dev->delay_us = delay_us;
+    rslt = bme280_init( dev );
+    return rslt;
 }
-void user_delay_us(uint32_t period, void *intf_ptr)   
-{
-    ets_delay_us(period);
-}
-
-void print_sensor_data(struct bme280_data *comp_data)
+void   print_sensor_data(struct bme280_data *comp_data)
 {
 #ifdef BME280_FLOAT_ENABLE
         printf("%0.2f, %0.2f, %0.2f\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
@@ -134,6 +143,80 @@ void print_sensor_data(struct bme280_data *comp_data)
         printf("%ld, %ld, %ld\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
 #endif
 }
+int8_t stream_sensor_data_normal_mode(struct bme280_dev *dev)
+{
+	int8_t rslt;
+	uint8_t settings_sel;
+	struct bme280_data comp_data;
+
+	/* Recommended mode of operation: Indoor navigation */
+	dev->settings.osr_h = BME280_OVERSAMPLING_1X;
+	dev->settings.osr_p = BME280_OVERSAMPLING_16X;
+	dev->settings.osr_t = BME280_OVERSAMPLING_2X;
+	dev->settings.filter = BME280_FILTER_COEFF_16;
+	dev->settings.standby_time = BME280_STANDBY_TIME_62_5_MS;
+
+	settings_sel = BME280_OSR_PRESS_SEL;
+	settings_sel |= BME280_OSR_TEMP_SEL;
+	settings_sel |= BME280_OSR_HUM_SEL;
+	settings_sel |= BME280_STANDBY_SEL;
+	settings_sel |= BME280_FILTER_SEL;
+	rslt = bme280_set_sensor_settings(settings_sel, dev);
+	rslt = bme280_set_sensor_mode(BME280_NORMAL_MODE, dev);
+
+	printf("Temperature, Pressure, Humidity\r\n");
+	while (1) {
+		/* Delay while the sensor completes a measurement */
+		dev->delay_us(70000, dev->intf_ptr);
+		rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
+        if (rslt != BME280_OK)
+        {
+            printf( "Failed to get sensor data (code %+d).", rslt);
+            break;
+        }
+		print_sensor_data(&comp_data);
+	}
+
+	return rslt;
+}
+int8_t stream_sensor_data_forced_mode(struct bme280_dev *dev)
+{
+    int8_t rslt;
+    uint8_t settings_sel;
+	uint32_t req_delay;
+    struct bme280_data comp_data;
+
+    /* Recommended mode of operation: Indoor navigation */
+    dev->settings.osr_h = BME280_OVERSAMPLING_1X;
+    dev->settings.osr_p = BME280_OVERSAMPLING_16X;
+    dev->settings.osr_t = BME280_OVERSAMPLING_2X;
+    dev->settings.filter = BME280_FILTER_COEFF_16;
+
+    settings_sel = BME280_OSR_PRESS_SEL | BME280_OSR_TEMP_SEL | BME280_OSR_HUM_SEL | BME280_FILTER_SEL;
+
+    rslt = bme280_set_sensor_settings(settings_sel, dev);
+	
+	/*Calculate the minimum delay required between consecutive measurement based upon the sensor enabled
+     *  and the oversampling configuration. */
+    req_delay = bme280_cal_meas_delay(&dev->settings);
+    req_delay *= 1000;                                                  // seems the program need longer than it thinks. there seems to be some issue between mil sec and micro sec
+    printf("Temperature, Pressure, Humidity\r\n");
+    /* Continuously stream sensor data */
+    while (1) {
+        rslt = bme280_set_sensor_mode(BME280_FORCED_MODE, dev);
+        /* Wait for the measurement to complete and print data @25Hz */
+        dev->delay_us(req_delay, dev->intf_ptr);
+        rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
+        if (rslt != BME280_OK)
+        {
+            printf( "Failed to get sensor data (code %+d).", rslt);
+            break;
+        }
+        print_sensor_data(&comp_data);
+    }
+    return rslt;
+}
+
 void print_chip_info()
 {
      printf("Hello world!\n");
@@ -162,90 +245,23 @@ void print_chip_info()
    // esp_restart();
 };
 
-int8_t stream_sensor_data_normal_mode(struct bme280_dev *dev)
-{
-	int8_t rslt;
-	uint8_t settings_sel;
-	struct bme280_data comp_data;
-
-	/* Recommended mode of operation: Indoor navigation */
-	dev->settings.osr_h = BME280_OVERSAMPLING_1X;
-	dev->settings.osr_p = BME280_OVERSAMPLING_16X;
-	dev->settings.osr_t = BME280_OVERSAMPLING_2X;
-	dev->settings.filter = BME280_FILTER_COEFF_16;
-	dev->settings.standby_time = BME280_STANDBY_TIME_62_5_MS;
-
-	settings_sel = BME280_OSR_PRESS_SEL;
-	settings_sel |= BME280_OSR_TEMP_SEL;
-	settings_sel |= BME280_OSR_HUM_SEL;
-	settings_sel |= BME280_STANDBY_SEL;
-	settings_sel |= BME280_FILTER_SEL;
-	rslt = bme280_set_sensor_settings(settings_sel, dev);
-	rslt = bme280_set_sensor_mode(BME280_NORMAL_MODE, dev);
-
-	printf("Temperature, Pressure, Humidity\r\n");
-	while (1) {
-		/* Delay while the sensor completes a measurement */
-		dev->delay_us(70000, dev->intf_ptr);
-		rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
-		print_sensor_data(&comp_data);
-	}
-
-	return rslt;
-}
-int8_t stream_sensor_data_forced_mode(struct bme280_dev *dev)
-{
-    int8_t rslt;
-    uint8_t settings_sel;
-	uint32_t req_delay;
-    struct bme280_data comp_data;
-
-    /* Recommended mode of operation: Indoor navigation */
-    dev->settings.osr_h = BME280_OVERSAMPLING_1X;
-    dev->settings.osr_p = BME280_OVERSAMPLING_16X;
-    dev->settings.osr_t = BME280_OVERSAMPLING_2X;
-    dev->settings.filter = BME280_FILTER_COEFF_16;
-
-    settings_sel = BME280_OSR_PRESS_SEL | BME280_OSR_TEMP_SEL | BME280_OSR_HUM_SEL | BME280_FILTER_SEL;
-
-    rslt = bme280_set_sensor_settings(settings_sel, dev);
-	
-	/*Calculate the minimum delay required between consecutive measurement based upon the sensor enabled
-     *  and the oversampling configuration. */
-    req_delay = bme280_cal_meas_delay(&dev->settings);
-
-    printf("Temperature, Pressure, Humidity\r\n");
-    /* Continuously stream sensor data */
-    while (1) {
-        rslt = bme280_set_sensor_mode(BME280_FORCED_MODE, dev);
-        /* Wait for the measurement to complete and print data @25Hz */
-        dev->delay_us(req_delay, dev->intf_ptr);
-        rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
-        print_sensor_data(&comp_data);
-    }
-    return rslt;
-}
-
 void app_main(void)
 {
-    ESP_ERROR_CHECK(i2c_master_init());
-    print_chip_info();
-
-    struct bme280_dev dev;
-    int8_t rslt = BME280_OK;
-    uint8_t dev_addr = I2C_DEVICE_ADDRESS;
-
-    dev.intf_ptr = &dev_addr;
-    dev.intf = BME280_I2C_INTF;
-    dev.read = user_i2c_read;
-    dev.write = user_i2c_write;
-    dev.delay_us = user_delay_us;
-    rslt = bme280_init(&dev);
+    struct bme280_dev dev;                                  //Structure to hold bme interface pointers. used in bme280_setup(&dev), USED TO OPPERATE THE BME280 CHIP
+    ESP_ERROR_CHECK(i2c_master_init());                     // initiate I2C buss
+    int8_t rslt = bme280_setup(&dev);                       // set up bme280 interface
+    if (rslt != BME280_OK)
+        {
+            printf( "Failed to set up bme280 (code %+d).", rslt);
+    
+        }
+    print_chip_info();                                      // print usefull ESP chip info
 
     rslt = stream_sensor_data_normal_mode(&dev);
+    //rslt = stream_sensor_data_forced_mode(&dev);
     if (rslt != BME280_OK)
     {
-        fprintf(stderr, "Failed to stream sensor data (code %+d).\n", rslt);
+        printf( "Failed to stream sensor data (code %+d).\n", rslt);
         exit(1);
     }
 }
