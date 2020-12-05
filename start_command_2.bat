@@ -1,0 +1,1 @@
+xtensa-esp32-elf-gdb -x gdbinit build/myBme280-app.elf

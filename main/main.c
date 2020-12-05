@@ -13,6 +13,7 @@
 #include <sys/fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -43,25 +44,124 @@
 
 #endif
 
-//#include "sdkconfig.h"
 #include "bme280.h"
 
-//      DEFINES       //
-#define SDA_PIN GPIO_NUM_14			//21
-#define SCL_PIN GPIO_NUM_26			//25
+#include "driver/rmt.h"
+#include "led_strip.h"
+#define LED_RMT_TX_CHANNEL RMT_CHANNEL_0
+#define LED_CHASE_SPEED_MS (50)
 
+
+#include "driver/adc.h"
+#include "esp_adc_cal.h"
+#define DEFAULT_VREF    1100        //Use adc2_vref_to_gpio() to obtain a better estimate
+#define NO_OF_SAMPLES   64          //Multisampling
+
+
+//      DEFINES BME280/ i2c      //
+#define SDA_PIN GPIO_NUM_27			//14
+#define SCL_PIN GPIO_NUM_26			//26
 #define ACK_CHECK_EN 0x1                                       /*!< I2C master will check ack from slave*/
 #define ACK_CHECK_DIS 0x0                                      /*!< I2C master will not check ack from slave */
-
 #define ACK_VAL 0x0                                            /*!< I2C ack value */
 #define NACK_VAL 0x1                                           /*!< I2C nack value */
-
 #define READ_BIT  1                           
 #define WRITE_BIT 0
 #define I2C_MASTER_NUM 0                                      /*!< I2C port number for master dev */
-
 #define I2C_DEVICE_ADDRESS BME280_I2C_ADDR_PRIM               // options = BME280_I2C_ADDR_PRIM or BME280_I2C_ADDR_SEC
 
+//------------------ADC------------------------
+
+static esp_adc_cal_characteristics_t *adc_chars;
+#if CONFIG_IDF_TARGET_ESP32
+static const adc_channel_t channel = ADC_CHANNEL_6;     //ADC_CHANNEL_6 = GPIO34		GPIO34 if ADC1, GPIO14 if ADC2
+static const adc_bits_width_t width = ADC_WIDTH_BIT_12;
+#elif CONFIG_IDF_TARGET_ESP32S2
+static const adc_channel_t channel = ADC_CHANNEL_6;     // GPIO7 if ADC1, GPIO17 if ADC2
+static const adc_bits_width_t width = ADC_WIDTH_BIT_13;
+#endif
+static const adc_atten_t atten = ADC_ATTEN_DB_11;
+static const adc_unit_t unit = ADC_UNIT_1;
+
+static void check_efuse(void)
+{
+#if CONFIG_IDF_TARGET_ESP32
+    //Check if TP is burned into eFuse
+    if (esp_adc_cal_check_efuse(ESP_ADC_CAL_VAL_EFUSE_TP) == ESP_OK) {
+        printf("eFuse Two Point: Supported\n");
+    } else {
+        printf("eFuse Two Point: NOT supported\n");
+    }
+    //Check Vref is burned into eFuse
+    if (esp_adc_cal_check_efuse(ESP_ADC_CAL_VAL_EFUSE_VREF) == ESP_OK) {
+        printf("eFuse Vref: Supported\n");
+    } else {
+        printf("eFuse Vref: NOT supported\n");
+    }
+#elif CONFIG_IDF_TARGET_ESP32S2
+    if (esp_adc_cal_check_efuse(ESP_ADC_CAL_VAL_EFUSE_TP) == ESP_OK) {
+        printf("eFuse Two Point: Supported\n");
+    } else {
+        printf("Cannot retrieve eFuse Two Point calibration values. Default calibration values will be used.\n");
+    }
+#else
+#error "This example is configured for ESP32/ESP32S2."
+#endif
+}
+static void print_char_val_type(esp_adc_cal_value_t val_type)
+{
+    if (val_type == ESP_ADC_CAL_VAL_EFUSE_TP) {
+        printf("Characterized using Two Point Value\n");
+    } else if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) {
+        printf("Characterized using eFuse Vref\n");
+    } else {
+        printf("Characterized using Default Vref\n");
+    }
+}
+
+uint32_t LastAdc;
+uint32_t getAdc()
+{
+	 //Check if Two Point or Vref are burned into eFuse
+   // check_efuse();
+
+    //Configure ADC
+    if (unit == ADC_UNIT_1) {
+        adc1_config_width(width);
+        adc1_config_channel_atten(channel, atten);
+    } else {
+        adc2_config_channel_atten((adc2_channel_t)channel, atten);
+    }
+
+    //Characterize ADC
+    adc_chars = calloc(1, sizeof(esp_adc_cal_characteristics_t));
+    esp_adc_cal_value_t val_type = esp_adc_cal_characterize(unit, atten, width, DEFAULT_VREF, adc_chars);
+  //  print_char_val_type(val_type);
+
+    //Continuously sample ADC1
+   // while (1) {
+        uint32_t adc_reading = 0;
+        //Multisampling
+        for (int i = 0; i < NO_OF_SAMPLES; i++) {
+            if (unit == ADC_UNIT_1) {
+                adc_reading += adc1_get_raw((adc1_channel_t)channel);
+            } else {
+                int raw;
+                adc2_get_raw((adc2_channel_t)channel, width, &raw);
+                adc_reading += raw;
+            }
+        }
+        adc_reading /= NO_OF_SAMPLES;
+
+        //Convert adc_reading to voltage in mV
+  //    uint32_t voltage = esp_adc_cal_raw_to_voltage(adc_reading, adc_chars);
+  //    printf("Raw: %d\tVoltage: %dmV\n", adc_reading, voltage);
+  //    vTaskDelay(pdMS_TO_TICKS(1000));
+		return adc_reading;
+   // }
+}
+
+//---------------------ADC_END---------------------------------
 
 
 // ==========================================================
@@ -74,6 +174,7 @@ static uint8_t doprint = 1;
 static uint8_t run_gs_demo = 0; // Run gray scale demo if set to 1
 static struct tm *tm_info;
 static char tmp_buff[64];
+static char tmp_buff_last[64];
 static time_t time_now, time_last = 0;
 static const char *file_fonts[3] = {"/spiffs/fonts/DotMatrix_M.fon", "/spiffs/fonts/Ubuntu.fon", "/spiffs/fonts/Grotesk24x48.fon"};
 
@@ -187,6 +288,58 @@ static int obtain_time(void)
 
 #endif //CONFIG_EXAMPLE_USE_WIFI
 //==================================================================================
+
+
+static const char *TAG = "BME280 & WS2812B";
+
+//-----------------------------------START OF FUNCTIONS---------------------------
+
+void led_strip_hsv2rgb(uint32_t h, uint32_t s, uint32_t v, uint32_t *r, uint32_t *g, uint32_t *b)
+{
+    h %= 360; // h -> [0,360]
+    uint32_t rgb_max = v * 2.55f;
+    uint32_t rgb_min = rgb_max * (100 - s) / 100.0f;
+
+    uint32_t i = h / 60;
+    uint32_t diff = h % 60;
+
+    // RGB adjustment amount by hue
+    uint32_t rgb_adj = (rgb_max - rgb_min) * diff / 60;
+
+    switch (i) {
+    case 0:
+        *r = rgb_max;
+        *g = rgb_min + rgb_adj;
+        *b = rgb_min;
+        break;
+    case 1:
+        *r = rgb_max - rgb_adj;
+        *g = rgb_max;
+        *b = rgb_min;
+        break;
+    case 2:
+        *r = rgb_min;
+        *g = rgb_max;
+        *b = rgb_min + rgb_adj;
+        break;
+    case 3:
+        *r = rgb_min;
+        *g = rgb_max - rgb_adj;
+        *b = rgb_max;
+        break;
+    case 4:
+        *r = rgb_min + rgb_adj;
+        *g = rgb_min;
+        *b = rgb_max;
+        break;
+    default:
+        *r = rgb_max;
+        *g = rgb_min;
+        *b = rgb_max - rgb_adj;
+        break;
+    }
+}
+led_strip_t *strip;		//made strip global to access it in print function
 
 
 //----------------------
@@ -1461,6 +1614,49 @@ int8_t    bme280_i2c_write(uint8_t reg_addr, const uint8_t *data, uint32_t len, 
     }
 }
 
+// Formula	:	RH = 100% X (E/Es)		where E is vapour pressure & Es is saturation vapour pressure
+//				E =  EO * EXP( (L/Rv) * ((1/TO)-(1/Td)) )				
+//				Es = EO * EXP( (L/Rv) * ((1/TO)-(1/T)) )
+// Given  	:	EO = 0.611KPa; (L/Rv) = 5423 kelvin; TO = 273 Kelvin; (1/TO) = 0.003663;
+// Therefore:	
+const int dew_EO = 611;		// in Pa
+double dew_Es = 0;
+const uint16_t LRv = 5423;
+
+void dew_from_humidity(struct bme280_data *comp_data)
+{
+	printf("\nTemp: %f", comp_data->temperature );
+	float T = (1 / comp_data->temperature);
+	printf("\n1/Temp: %f", T );
+
+	T = 0.003663 - T;
+	printf("\n(1/TO)-(1/T): %f", T );
+
+	T *= LRv;
+	printf("\n (1/TO)-(1/T) * (L/Rv): %f", T );
+	
+/*
+	double TT;
+	TT = exp(abs(T));
+	printf("\nEXP((1/TO)-(1/T) * (L/Rv)): %f", TT );
+*/
+	double TT = T;
+	TT = expl(abs(TT));
+	printf("\nEXP((1/TO)-(1/T) * (L/Rv)): %f", TT );
+
+	dew_Es = dew_EO * TT;
+	printf("\ndew_Es: %f", dew_Es );
+
+//	printf("\nsize of char:  %d", sizeof(char));
+//	printf("\nsize of int:  %d", sizeof(int));
+//	printf("\nsize of double:  %d", sizeof(double));
+//	printf("\nsize of float:  %d", sizeof(float));
+//	printf("\nsize of long double:  %d", sizeof(long double));
+//	dew_Es = dew_EO * (exp((0.003663 - (1 / comp_data->temperature)) * 5423 ));
+//	printf( "\nDew_Es ie Saturation vapour pressure:  %f", dew_Es );
+}
+
+
 int8_t bme280_setup(struct bme280_dev *dev)
 {
     int8_t rslt;
@@ -1477,26 +1673,71 @@ void   print_sensor_data(struct bme280_data *comp_data)
 {
 #ifdef BME280_FLOAT_ENABLE
 
-        printf("%0.2f, %0.2f, %0.2f\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
+		update_header(NULL, "");		// increments count in info footer
+       // printf("%0.2f, %0.2f, %0.2f\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
 		
-		int y = 4;
-		_fg = TFT_BLUE;
 		TFT_setFont(DEJAVU18_FONT, NULL);
+		int x = 10;
+		int y =  TFT_getfontheight() + 4;
+		_fg = TFT_WHITE;
+	//	TFT_setFont(DEJAVU18_FONT, NULL);
 		sprintf(tmp_buff,"Temperature: %0.2f",comp_data->temperature);
-		TFT_print(tmp_buff, 4, y);
+		TFT_print(tmp_buff, x, y);
 		y += TFT_getfontheight() + 4;
 
-		TFT_setFont(DEJAVU18_FONT, NULL);
+	//	TFT_setFont(DEJAVU18_FONT, NULL);
 		sprintf(tmp_buff,"Pressure: %0.2f",comp_data->pressure);
-		TFT_print(tmp_buff, 4, y);
-		y += TFT_getfontheight() + 4;
+		TFT_print(tmp_buff, x, y);
+		y += (TFT_getfontheight() + 4);
 
-		TFT_setFont(DEJAVU18_FONT, NULL);
+	//	TFT_setFont(DEJAVU18_FONT, NULL);
 		sprintf(tmp_buff,"Humidity: %0.2f",comp_data->humidity);
-		TFT_print(tmp_buff, 4, y);
+		TFT_print(tmp_buff, x, y);
+		y += (TFT_getfontheight() + 4);
 
 
-		//sprintf(tmp_buff, "Read speed: %5.2f MHz", (float)max_rdclock / 1000000.0);
+		uint32_t AdcResult = getAdc();
+	//	TFT_setFont(DEJAVU18_FONT, NULL);
+		sprintf(tmp_buff,"Bar Graph: %d", AdcResult );
+
+		if( strlen(tmp_buff) < strlen(tmp_buff_last) )
+		{
+			_fg = TFT_BLACK;
+			TFT_print(tmp_buff_last, x, y);
+			_fg = TFT_WHITE;
+		}
+		TFT_print(tmp_buff, x, y);
+		sprintf(tmp_buff_last, tmp_buff);
+
+		
+		y += (TFT_getfontheight() + 4);				// this section calculates the color based on adc result
+		x = 10;
+		color_t myColor = {255, 255, 255};
+		myColor.g = (uint32_t)((float)AdcResult/4095 * 255);
+		myColor.r = 255 - myColor.g;
+		myColor.b = 0;
+
+		TFT_drawRect(x, y, 100, 20, TFT_YELLOW);				// draw empty box to fill based on adc result
+		AdcResult = (uint32_t)((float)AdcResult/4095 * 99);
+		if( AdcResult < LastAdc)
+		{
+			TFT_fillRect( x + AdcResult,  y+1, LastAdc-AdcResult, 18, TFT_BLACK);		//this clears the part of the rectangle drawn last frame if the new one is smaler 
+		}
+		TFT_fillRect( x,  y+1,  AdcResult, 18, myColor);
+		LastAdc = AdcResult;
+
+		for (int j = 0; j < CONFIG_STRIP_LED_NUMBER; j += 1)
+		{
+			ESP_ERROR_CHECK(strip->set_pixel(strip, j, myColor.r, myColor.g, myColor.b));
+		}
+		// Flush RGB values to LEDs
+		ESP_ERROR_CHECK(strip->refresh(strip, 100)); 
+	//	vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
+		//strip->clear(strip, 50);
+		//vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
+		
+
+
 #else
         printf("%ld, %ld, %ld\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
 #endif
@@ -1576,10 +1817,9 @@ int8_t stream_sensor_data_forced_mode(struct bme280_dev *dev)
 }
 
 int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
-{
+{	
 	int8_t rslt;
-	uint8_t settings_sel;
-	struct bme280_data comp_data;
+	uint8_t settings_sel;	struct bme280_data comp_data;
 
 
 	font_rotate = 0;
@@ -1616,7 +1856,7 @@ int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
 		sprintf(dtype, "Unknown");
 	}
 
-	uint8_t disp_rot = PORTRAIT;
+	uint8_t disp_rot = LANDSCAPE;
 	_demo_pass = 0;
 	gray_scale = 0;
 	doprint = 1;				
@@ -1640,42 +1880,17 @@ int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
 
 	while (1)
 	{
-		if (run_gs_demo)
-		{
-			if (_demo_pass == 8)
-				doprint = 0;
-			// Change gray scale mode on every 2nd pass
-			gray_scale = _demo_pass & 1;
-			// change display rotation
-			if ((_demo_pass % 2) == 0)
-			{
-				_bg = TFT_BLACK;
-				TFT_setRotation(disp_rot);
-				disp_rot++;
-				disp_rot &= 3;
-			}
-		}
-		else
-		{
-			if (_demo_pass == 4)
-				doprint = 0;
-			// change display rotation
-			_bg = TFT_BLACK;
-			TFT_setRotation(disp_rot);
-		//	disp_rot++;							// comment this line to stop screen rotation per demo pass
-			disp_rot &= 3;
-		}
-
+		
 		if (doprint)
 		{
 			if (disp_rot == 1)
-				sprintf(tmp_buff, "PORTRAIT");
-			if (disp_rot == 2)
 				sprintf(tmp_buff, "LANDSCAPE");
-			if (disp_rot == 3)
+			if (disp_rot == 2)
 				sprintf(tmp_buff, "PORTRAIT FLIP");
-			if (disp_rot == 0)
+			if (disp_rot == 3)
 				sprintf(tmp_buff, "LANDSCAPE FLIP");
+			if (disp_rot == 0)
+				sprintf(tmp_buff, "PORTRAIT");
 			printf("\r\n==========================================\r\nDisplay: %s: %s %d,%d %s\r\n\r\n",
 				   dtype, tmp_buff, _width, _height, ((gray_scale) ? "Gray" : "Color"));
 		}
@@ -1685,7 +1900,7 @@ int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
 
 		disp_header("INITIALISING");
 
-		end_time = clock() + GDEMO_TIME;
+		end_time = clock() + 500;			// was   GDEMO_TIME
 		n = 0;
 		while ((clock() < end_time) && (Wait(0)))
 		{
@@ -1701,7 +1916,7 @@ int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
 		}
 		sprintf(tmp_buff, "%d STRINGS", n);
 		update_header(NULL, tmp_buff);
-		Wait(-GDEMO_INFO_TIME);
+		Wait(-1000);					// was  -GDEMO_INFO_TIME
 
 
 		/* Recommended mode of operation: Indoor navigation */
@@ -1716,11 +1931,11 @@ int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
 		settings_sel |= BME280_OSR_HUM_SEL;
 		settings_sel |= BME280_STANDBY_SEL;
 		settings_sel |= BME280_FILTER_SEL;
-			//disp_header("Getting DATA");
+
 		rslt = bme280_set_sensor_settings(settings_sel, dev);
 		rslt = bme280_set_sensor_mode(BME280_NORMAL_MODE, dev);
-			 disp_header("Getting DATA");
-
+			 
+		disp_header("Getting DATA");
 		printf("Temperature, Pressure, Humidity\r\n");
 		while (1) 
 		{
@@ -1732,8 +1947,10 @@ int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
 				printf( "Failed to get sensor data (code %+d).", rslt);
 				break;
 			}
+			dew_from_humidity(&comp_data);
 			print_sensor_data(&comp_data);
 		//	Wait(-GDEMO_INFO_TIME);
+		
 		}	
 		return rslt;
 	}
@@ -1770,6 +1987,7 @@ void print_chip_info()
 
 void app_main(void)
 {
+	
     struct bme280_dev dev;                                  //Structure to hold bme interface pointers. used in bme280_setup(&dev), USED TO OPPERATE THE BME280 CHIP
     ESP_ERROR_CHECK(i2c_master_init());                     // initiate I2C buss
     int8_t rslt = bme280_setup(&dev);                       // set up bme280 interface
@@ -1789,8 +2007,8 @@ void app_main(void)
     }
 */
 
-//test_sd_card();
-	// ========  PREPARE DISPLAY INITIALIZATION  =========
+
+	// ======== DISPLAY INITIALIZATION  =========
 
 	esp_err_t ret;
 
@@ -1872,7 +2090,7 @@ void app_main(void)
 
 	vTaskDelay(500 / portTICK_RATE_MS);
 	printf("\r\n==============================\r\n");
-	printf("TFT display DEMO, LoBo 11/2017\r\n");
+	printf("BME280/TFT SENSOR DEMO\r\n");
 	printf("==============================\r\n");
 	printf("Pins used: miso=%d, mosi=%d, sck=%d, cs=%d\r\n", PIN_NUM_MISO, PIN_NUM_MOSI, PIN_NUM_CLK, PIN_NUM_CS);
 #if USE_TOUCH > TOUCH_TYPE_NONE
@@ -1937,7 +2155,7 @@ void app_main(void)
 	printf("SPI: Changed speed to %u\r\n", spi_lobo_get_speed(spi));
 
 	printf("\r\n---------------------\r\n");
-	printf("Graphics demo started\r\n");
+	printf("BME280 demo started\r\n");
 	printf("---------------------\r\n");
 
 	font_rotate = 0;
@@ -1989,7 +2207,7 @@ void app_main(void)
 		Wait(-2000);
 	}
 #endif
-
+/*
 	disp_header("File system INIT");
 	_fg = TFT_CYAN;
 	TFT_print("Initializing SPIFFS...", CENTER, CENTER);
@@ -2007,13 +2225,59 @@ void app_main(void)
 		TFT_print("SPIFFS Mounted.", CENTER, LASTY + TFT_getfontheight() + 2);
 	}
 	Wait(-2000);
-
+*/
 	//=========
 	// Run demo
 	//=========
 	//tft_demo();
 
-rslt = stream_sensor_data_normal_tft(&dev);
+	uint32_t red = 0;
+    uint32_t green = 0;
+    uint32_t blue = 0;
+    uint16_t hue = 0;
+    uint16_t start_rgb = 0;
+
+    rmt_config_t config = RMT_DEFAULT_CONFIG_TX(CONFIG_LED_RMT_TX_GPIO, LED_RMT_TX_CHANNEL);
+    // set counter clock to 40MHz
+    config.clk_div = 2;
+
+    ESP_ERROR_CHECK(rmt_config(&config));
+    ESP_ERROR_CHECK(rmt_driver_install(config.channel, 0, 0));
+
+    // install ws2812 driver
+    led_strip_config_t strip_config = LED_STRIP_DEFAULT_CONFIG(CONFIG_STRIP_LED_NUMBER, (led_strip_dev_t)config.channel);
+   /* led_strip_t *strip*/ strip = led_strip_new_rmt_ws2812(&strip_config);
+    if (!strip) {
+        ESP_LOGE(TAG, "install WS2812 driver failed");
+    }
+	
+    // Clear LED strip (turn off all LEDs)
+    ESP_ERROR_CHECK(strip->clear(strip, 100));
+    // Show simple rainbow chasing pattern
+    ESP_LOGI(TAG, "LED Rainbow Chase Start");
+
+        for (int i = 0; i < 30; i++)
+        {
+            for (int j = i; j < CONFIG_STRIP_LED_NUMBER; j += 3)
+            {
+                // Build RGB values
+                hue = j * 360 / CONFIG_STRIP_LED_NUMBER + start_rgb;
+                led_strip_hsv2rgb(hue, 100, 100, &red, &green, &blue);
+                // Write RGB values to strip driver
+                ESP_ERROR_CHECK(strip->set_pixel(strip, j, 255, 0, 0));
+            }
+            // Flush RGB values to LEDs
+            ESP_ERROR_CHECK(strip->refresh(strip, 100)); 
+            vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
+            strip->clear(strip, 50);
+            vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
+		}
+        start_rgb += 60;
+    
+
+
+
+	rslt = stream_sensor_data_normal_tft(&dev);
     //rslt = stream_sensor_data_forced_mode(&dev);
     if (rslt != BME280_OK)
     {
@@ -2021,4 +2285,6 @@ rslt = stream_sensor_data_normal_tft(&dev);
         exit(1);
     }
 
+
 }
+

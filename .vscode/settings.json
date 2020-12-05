@@ -13,6 +13,10 @@
     "task.h": "c",
     "esp_spi_flash.h": "c",
     "spiffs_vfs.h": "c",
-    "tftspi.h": "c"
+    "tftspi.h": "c",
+    "sstream": "c",
+    "cstdlib": "cpp",
+    "*.ipp": "cpp",
+    "ratio": "c"
   }
 }

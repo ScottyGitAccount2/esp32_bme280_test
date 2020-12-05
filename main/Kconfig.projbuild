@@ -1,4 +1,4 @@
-menu "TFT Display DEMO Configuration"
+menu "TFT Display/Spiffs Configuration"
 
 config SPIFFS_BASE_ADDR
     int "SPIFFS Base address"
@@ -69,4 +69,18 @@ config WIFI_PASSWORD
 	WiFi password (WPA or WPA2) for the demo to use.
 
 
+endmenu
+
+menu "LED Stirp Configuration"
+    config LED_RMT_TX_GPIO
+        int "RMT TX GPIO"
+        default 18
+        help
+            Set the GPIO number used for transmitting the RMT signal.
+
+    config STRIP_LED_NUMBER
+        int "Number of LEDS in a strip"
+        default 24
+        help
+            A single RGB strip contains several LEDs.
 endmenu
