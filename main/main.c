@@ -27,8 +27,14 @@
 #include "tftspi.h"
 #include "tft.h"
 #include "spiffs_vfs.h"
-#ifdef CONFIG_EXAMPLE_USE_WIFI
 
+#include "esp_system.h"
+#include "nvs_flash.h"
+#include "nvs.h"
+
+#include "esp_heap_caps.h"
+
+#ifdef CONFIG_EXAMPLE_USE_WIFI
 #include "esp_wifi.h"
 #include "esp_system.h"
 #include "esp_event.h"
@@ -41,7 +47,6 @@
 #include "apps/sntp/sntp.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-
 #endif
 
 #include "bme280.h"
@@ -49,25 +54,26 @@
 #include "driver/rmt.h"
 #include "led_strip.h"
 #define LED_RMT_TX_CHANNEL RMT_CHANNEL_0
-#define LED_CHASE_SPEED_MS (50)
-
+#define LED_CHASE_SPEED_MS (20)
 
 #include "driver/adc.h"
 #include "esp_adc_cal.h"
 #define DEFAULT_VREF    1100        //Use adc2_vref_to_gpio() to obtain a better estimate
 #define NO_OF_SAMPLES   64          //Multisampling
 
+static const char *TAG = "BME280 & WS2812B";
+#define STORAGE_NAMESPACE "storage"
 
 //      DEFINES BME280/ i2c      //
 #define SDA_PIN GPIO_NUM_27			//14
 #define SCL_PIN GPIO_NUM_26			//26
-#define ACK_CHECK_EN 0x1                                       /*!< I2C master will check ack from slave*/
-#define ACK_CHECK_DIS 0x0                                      /*!< I2C master will not check ack from slave */
-#define ACK_VAL 0x0                                            /*!< I2C ack value */
-#define NACK_VAL 0x1                                           /*!< I2C nack value */
+#define ACK_CHECK_EN 0x1                                       /* I2C master will check ack from slave*/
+#define ACK_CHECK_DIS 0x0                                      /* I2C master will not check ack from slave */
+#define ACK_VAL 0x0                                            /* I2C ack value */
+#define NACK_VAL 0x1                                           /* I2C nack value */
 #define READ_BIT  1                           
 #define WRITE_BIT 0
-#define I2C_MASTER_NUM 0                                      /*!< I2C port number for master dev */
+#define I2C_MASTER_NUM 0                                      /* I2C port number for master dev */
 #define I2C_DEVICE_ADDRESS BME280_I2C_ADDR_PRIM               // options = BME280_I2C_ADDR_PRIM or BME280_I2C_ADDR_SEC
 
 //------------------ADC------------------------
@@ -123,29 +129,36 @@ uint32_t LastAdc;
 uint32_t getAdc()
 {
 	 //Check if Two Point or Vref are burned into eFuse
-   // check_efuse();
+//  check_efuse();
 
     //Configure ADC
-    if (unit == ADC_UNIT_1) {
+    if (unit == ADC_UNIT_1) 
+	{
         adc1_config_width(width);
         adc1_config_channel_atten(channel, atten);
-    } else {
+    }
+	 else 
+	{
         adc2_config_channel_atten((adc2_channel_t)channel, atten);
     }
 
     //Characterize ADC
     adc_chars = calloc(1, sizeof(esp_adc_cal_characteristics_t));
     esp_adc_cal_value_t val_type = esp_adc_cal_characterize(unit, atten, width, DEFAULT_VREF, adc_chars);
-  //  print_char_val_type(val_type);
+//  print_char_val_type(val_type);
 
     //Continuously sample ADC1
    // while (1) {
         uint32_t adc_reading = 0;
         //Multisampling
-        for (int i = 0; i < NO_OF_SAMPLES; i++) {
-            if (unit == ADC_UNIT_1) {
+        for (int i = 0; i < NO_OF_SAMPLES; i++) 
+		{
+            if (unit == ADC_UNIT_1) 
+			{
                 adc_reading += adc1_get_raw((adc1_channel_t)channel);
-            } else {
+            } 
+			else 
+			{
                 int raw;
                 adc2_get_raw((adc2_channel_t)channel, width, &raw);
                 adc_reading += raw;
@@ -157,6 +170,7 @@ uint32_t getAdc()
   //    uint32_t voltage = esp_adc_cal_raw_to_voltage(adc_reading, adc_chars);
   //    printf("Raw: %d\tVoltage: %dmV\n", adc_reading, voltage);
   //    vTaskDelay(pdMS_TO_TICKS(1000));
+		free(adc_chars);
 		return adc_reading;
    // }
 }
@@ -169,17 +183,10 @@ uint32_t getAdc()
 #define SPI_BUS TFT_HSPI_HOST
 // ==========================================================
 
-static int _demo_pass = 0;
-static uint8_t doprint = 1;
-static uint8_t run_gs_demo = 0; // Run gray scale demo if set to 1
+static uint8_t doprint = 1;			//controls if printf statments used
 static struct tm *tm_info;
-static char tmp_buff[64];
-static char tmp_buff_last[64];
+static char tmp_buff[64], tmp_buff_last[64];
 static time_t time_now, time_last = 0;
-static const char *file_fonts[3] = {"/spiffs/fonts/DotMatrix_M.fon", "/spiffs/fonts/Ubuntu.fon", "/spiffs/fonts/Grotesk24x48.fon"};
-
-#define GDEMO_TIME 1000
-#define GDEMO_INFO_TIME 5000
 
 //==================================================================================
 #ifdef CONFIG_EXAMPLE_USE_WIFI
@@ -287,11 +294,8 @@ static int obtain_time(void)
 }
 
 #endif //CONFIG_EXAMPLE_USE_WIFI
+
 //==================================================================================
-
-
-static const char *TAG = "BME280 & WS2812B";
-
 //-----------------------------------START OF FUNCTIONS---------------------------
 
 void led_strip_hsv2rgb(uint32_t h, uint32_t s, uint32_t v, uint32_t *r, uint32_t *g, uint32_t *b)
@@ -340,7 +344,6 @@ void led_strip_hsv2rgb(uint32_t h, uint32_t s, uint32_t v, uint32_t *r, uint32_t
     }
 }
 led_strip_t *strip;		//made strip global to access it in print function
-
 
 //----------------------
 static void _checkTime()
@@ -523,1014 +526,51 @@ static void update_header(char *hdr, char *ftr)
 
 	TFT_restoreClipWin();
 }
-//------------------------
-static void test_times()
+
+//==============================================================================
+// Formula	:	RH = 100% X (E/Es)		where E is vapour pressure & Es is saturation vapour pressure
+//				E =  EO * EXP( (L/Rv) * ((1/TO)-(1/Td)) )				
+//				Es = EO * EXP( (L/Rv) * ((1/TO)-(1/T)) )
+// Given  	:	EO = 0.611KPa; (L/Rv) = 5423 kelvin; TO = 273 Kelvin; (1/TO) = 0.003663;
+// Therefore:	
+const int 		dew_EO = 611;		// in Pa
+double 			dew_Es = 0;
+const uint16_t 	LRv = 5423;
+void 	dew_from_humidity(struct bme280_data *comp_data)
 {
+	printf("\nTemp: %f", comp_data->temperature );
+	float T = (1 / comp_data->temperature);
+	printf("\n1/Temp: %f", T );
 
-	if (doprint)
-	{
-		uint32_t tstart, t1, t2;
-		disp_header("TIMINGS");
-		// ** Show Fill screen and send_line timings
-		tstart = clock();
-		TFT_fillWindow(TFT_BLACK);
-		t1 = clock() - tstart;
-		printf("     Clear screen time: %u ms\r\n", t1);
-		TFT_setFont(SMALL_FONT, NULL);
-		sprintf(tmp_buff, "Clear screen: %u ms", t1);
-		TFT_print(tmp_buff, 0, 140);
+	T = 0.003663 - T;
+	printf("\n(1/TO)-(1/T): %f", T );
 
-		color_t *color_line = heap_caps_malloc((_width * 3), MALLOC_CAP_DMA);
-		color_t *gsline = NULL;
-		if (gray_scale)
-			gsline = malloc(_width * 3);
-		if (color_line)
-		{
-			float hue_inc = (float)((10.0 / (float)(_height - 1) * 360.0));
-			for (int x = 0; x < _width; x++)
-			{
-				color_line[x] = HSBtoRGB(hue_inc, 1.0, (float)x / (float)_width);
-				if (gsline)
-					gsline[x] = color_line[x];
-			}
-			disp_select();
-			tstart = clock();
-			for (int n = 0; n < 1000; n++)
-			{
-				if (gsline)
-					memcpy(color_line, gsline, _width * 3);
-				send_data(0, 40 + (n & 63), dispWin.x2 - dispWin.x1, 40 + (n & 63), (uint32_t)(dispWin.x2 - dispWin.x1 + 1), color_line);
-				wait_trans_finish(1);
-			}
-			t2 = clock() - tstart;
-			disp_deselect();
-
-			printf("Send color buffer time: %u us (%d pixels)\r\n", t2, dispWin.x2 - dispWin.x1 + 1);
-			free(color_line);
-
-			sprintf(tmp_buff, "   Send line: %u us", t2);
-			TFT_print(tmp_buff, 0, 144 + TFT_getfontheight());
-		}
-		Wait(GDEMO_INFO_TIME);
-	}
-}
-// Image demo
-//-------------------------
-static void disp_images()
-{
-	uint32_t tstart;
-
-	disp_header("JPEG IMAGES");
-
-	if (spiffs_is_mounted)
-	{
-		// ** Show scaled (1/8, 1/4, 1/2 size) JPG images
-		TFT_jpg_image(CENTER, CENTER, 3, SPIFFS_BASE_PATH "/images/test1.jpg", NULL, 0);
-		Wait(500);
-
-		TFT_jpg_image(CENTER, CENTER, 2, SPIFFS_BASE_PATH "/images/test2.jpg", NULL, 0);
-		Wait(500);
-
-		TFT_jpg_image(CENTER, CENTER, 1, SPIFFS_BASE_PATH "/images/test4.jpg", NULL, 0);
-		Wait(500);
-
-		// ** Show full size JPG image
-		tstart = clock();
-		TFT_jpg_image(CENTER, CENTER, 0, SPIFFS_BASE_PATH "/images/test3.jpg", NULL, 0);
-		tstart = clock() - tstart;
-		if (doprint)
-			printf("       JPG Decode time: %u ms\r\n", tstart);
-		sprintf(tmp_buff, "Decode time: %u ms", tstart);
-		update_header(NULL, tmp_buff);
-		Wait(-GDEMO_INFO_TIME);
-
-		// ** Show BMP image
-		update_header("BMP IMAGE", "");
-		for (int scale = 5; scale >= 0; scale--)
-		{
-			tstart = clock();
-			TFT_bmp_image(CENTER, CENTER, scale, SPIFFS_BASE_PATH "/images/tiger.bmp", NULL, 0);
-			tstart = clock() - tstart;
-			if (doprint)
-				printf("    BMP time, scale: %d: %u ms\r\n", scale, tstart);
-			sprintf(tmp_buff, "Decode time: %u ms", tstart);
-			update_header(NULL, tmp_buff);
-			Wait(-500);
-		}
-		Wait(-GDEMO_INFO_TIME);
-	}
-	else if (doprint)
-		printf("  No file system found.\r\n");
-}
-//---------------------
-static void font_demo()
-{
-	int x, y, n;
-	uint32_t end_time;
-
-	disp_header("FONT DEMO");
-
-	end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		y = 4;
-		for (int f = DEFAULT_FONT; f < FONT_7SEG; f++)
-		{
-			_fg = random_color();
-			TFT_setFont(f, NULL);
-			TFT_print("Welcome to ESP32", 4, y);
-			y += TFT_getfontheight() + 4;
-			n++;
-		}
-	}
-	sprintf(tmp_buff, "%d STRINGS", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-/*i commented this section out as there is an issue, i believe its spiff/ file system related
-	if (spiffs_is_mounted)
-	{
-		disp_header("FONT FROM FILE DEMO");
-		text_wrap = 1;
-		for (int f = 0; f < 3; f++)
-		{
-			TFT_fillWindow(TFT_BLACK);
-			update_header(NULL, "");
-			TFT_setFont(USER_FONT, file_fonts[f]);
-			if (f == 0)
-				font_line_space = 4;
-			end_time = clock() + GDEMO_TIME;
-			n = 0;
-			while ((clock() < end_time) && (Wait(0)))
-			{
-				_fg = random_color();
-				TFT_print("Welcome to ESP32\nThis is user font.", 0, 8);
-				n++;
-			}
-			if ((_width < 240) || (_height < 240))
-				TFT_setFont(DEF_SMALL_FONT, NULL);
-			else
-				TFT_setFont(DEFAULT_FONT, NULL);
-			_fg = TFT_YELLOW;
-			TFT_print((char *)file_fonts[f], 0, (dispWin.y2 - dispWin.y1) - TFT_getfontheight() - 4);
-
-			font_line_space = 0;
-			sprintf(tmp_buff, "%d STRINGS", n);
-			update_header(NULL, tmp_buff);
-			Wait(-GDEMO_INFO_TIME);
-		}
-		text_wrap = 0;
-	}
-*/
+	T *= LRv;
+	printf("\n (1/TO)-(1/T) * (L/Rv): %f", T );
 	
-	disp_header("ROTATED FONT DEMO");
-
-	end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		for (int f = DEFAULT_FONT; f < FONT_7SEG; f++)
-		{
-			_fg = random_color();
-			TFT_setFont(f, NULL);
-			x = rand_interval(8, dispWin.x2 - 8);
-			y = rand_interval(0, (dispWin.y2 - dispWin.y1) - TFT_getfontheight() - 2);
-			font_rotate = rand_interval(0, 359);
-
-			TFT_print("Welcome to ESP32", x, y);
-			n++;
-		}
-	}
-	font_rotate = 0;
-	sprintf(tmp_buff, "%d STRINGS", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	disp_header("7-SEG FONT DEMO");
-
-	int ms = 0;
-	int last_sec = 0;
-	uint32_t ctime = clock();
-	end_time = clock() + GDEMO_TIME * 2;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		y = 12;
-		ms = clock() - ctime;
-		time(&time_now);
-		tm_info = localtime(&time_now);
-		if (tm_info->tm_sec != last_sec)
-		{
-			last_sec = tm_info->tm_sec;
-			ms = 0;
-			ctime = clock();
-		}
-
-		_fg = TFT_ORANGE;
-		sprintf(tmp_buff, "%02d:%02d:%03d", tm_info->tm_min, tm_info->tm_sec, ms);
-		TFT_setFont(FONT_7SEG, NULL);
-		if ((_width < 240) || (_height < 240))
-			set_7seg_font_atrib(8, 1, 1, TFT_DARKGREY);
-		else
-			set_7seg_font_atrib(12, 2, 1, TFT_DARKGREY);
-		//TFT_clearStringRect(12, y, tmp_buff);
-		TFT_print(tmp_buff, CENTER, y);
-		n++;
-
-		_fg = TFT_GREEN;
-		y += TFT_getfontheight() + 12;
-		if ((_width < 240) || (_height < 240))
-			set_7seg_font_atrib(9, 1, 1, TFT_DARKGREY);
-		else
-			set_7seg_font_atrib(14, 3, 1, TFT_DARKGREY);
-		sprintf(tmp_buff, "%02d:%02d", tm_info->tm_sec, ms / 10);
-		//TFT_clearStringRect(12, y, tmp_buff);
-		TFT_print(tmp_buff, CENTER, y);
-		n++;
-
-		_fg = random_color();
-		y += TFT_getfontheight() + 8;
-		set_7seg_font_atrib(6, 1, 1, TFT_DARKGREY);
-		getFontCharacters((uint8_t *)tmp_buff);
-		//TFT_clearStringRect(12, y, tmp_buff);
-		TFT_print(tmp_buff, CENTER, y);
-		n++;
-	}
-	sprintf(tmp_buff, "%d STRINGS", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	disp_header("WINDOW DEMO");
-
-	TFT_saveClipWin();
-	TFT_resetclipwin();
-	TFT_drawRect(38, 48, (_width * 3 / 4) - 36, (_height * 3 / 4) - 46, TFT_WHITE);
-	TFT_setclipwin(40, 50, _width * 3 / 4, _height * 3 / 4);
-
-	if ((_width < 240) || (_height < 240))
-		TFT_setFont(DEF_SMALL_FONT, NULL);
-	else
-		TFT_setFont(UBUNTU16_FONT, NULL);
-	text_wrap = 1;
-	end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		_fg = random_color();
-		TFT_print("This text is printed inside the window.\nLong line can be wrapped to the next line.\nWelcome to ESP32", 0, 0);
-		n++;
-	}
-	text_wrap = 0;
-	sprintf(tmp_buff, "%d STRINGS", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	TFT_restoreClipWin();
-}
-//---------------------
-static void rect_demo()
-{
-	int x, y, w, h, n;
-
-	disp_header("RECTANGLE DEMO");
-
-	uint32_t end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x = rand_interval(4, dispWin.x2 - 4);
-		y = rand_interval(4, dispWin.y2 - 2);
-		w = rand_interval(2, dispWin.x2 - x);
-		h = rand_interval(2, dispWin.y2 - y);
-		TFT_drawRect(x, y, w, h, random_color());
-		n++;
-	}
-	sprintf(tmp_buff, "%d RECTANGLES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	update_header("FILLED RECTANGLE", "");
-	TFT_fillWindow(TFT_BLACK);
-	end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x = rand_interval(4, dispWin.x2 - 4);
-		y = rand_interval(4, dispWin.y2 - 2);
-		w = rand_interval(2, dispWin.x2 - x);
-		h = rand_interval(2, dispWin.y2 - y);
-		TFT_fillRect(x, y, w, h, random_color());
-		TFT_drawRect(x, y, w, h, random_color());
-		n++;
-	}
-	sprintf(tmp_buff, "%d RECTANGLES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-}
-//----------------------
-static void pixel_demo()
-{
-	int x, y, n;
-
-	disp_header("DRAW PIXEL DEMO");
-
-	uint32_t end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x = rand_interval(0, dispWin.x2);
-		y = rand_interval(0, dispWin.y2);
-		TFT_drawPixel(x, y, random_color(), 1);
-		n++;
-	}
-	sprintf(tmp_buff, "%d PIXELS", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-}
-//---------------------
-static void line_demo()
-{
-	int x1, y1, x2, y2, n;
-
-	disp_header("LINE DEMO");
-
-	uint32_t end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x1 = rand_interval(0, dispWin.x2);
-		y1 = rand_interval(0, dispWin.y2);
-		x2 = rand_interval(0, dispWin.x2);
-		y2 = rand_interval(0, dispWin.y2);
-		TFT_drawLine(x1, y1, x2, y2, random_color());
-		n++;
-	}
-	sprintf(tmp_buff, "%d LINES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-}
-//----------------------
-static void aline_demo()
-{
-	int x, y, len, angle, n;
-
-	disp_header("LINE BY ANGLE DEMO");
-
-	x = (dispWin.x2 - dispWin.x1) / 2;
-	y = (dispWin.y2 - dispWin.y1) / 2;
-	if (x < y)
-		len = x - 8;
-	else
-		len = y - 8;
-
-	uint32_t end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		for (angle = 0; angle < 360; angle++)
-		{
-			TFT_drawLineByAngle(x, y, 0, len, angle, random_color());
-			n++;
-		}
-	}
-
-	TFT_fillWindow(TFT_BLACK);
-	end_time = clock() + GDEMO_TIME;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		for (angle = 0; angle < 360; angle++)
-		{
-			TFT_drawLineByAngle(x, y, len / 4, len / 4, angle, random_color());
-			n++;
-		}
-		for (angle = 0; angle < 360; angle++)
-		{
-			TFT_drawLineByAngle(x, y, len * 3 / 4, len / 4, angle, random_color());
-			n++;
-		}
-	}
-	sprintf(tmp_buff, "%d LINES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-}
-//--------------------
-static void arc_demo()
-{
-	uint16_t x, y, r, th, n, i;
-	float start, end;
-	color_t color, fillcolor;
-
-	disp_header("ARC DEMO");
-
-	x = (dispWin.x2 - dispWin.x1) / 2;
-	y = (dispWin.y2 - dispWin.y1) / 2;
-
-	th = 6;
-	uint32_t end_time = clock() + GDEMO_TIME;
-	i = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		if (x < y)
-			r = x - 4;
-		else
-			r = y - 4;
-		start = 0;
-		end = 20;
-		n = 1;
-		while (r > 10)
-		{
-			color = random_color();
-			TFT_drawArc(x, y, r, th, start, end, color, color);
-			r -= (th + 2);
-			n++;
-			start += 30;
-			end = start + (n * 20);
-			i++;
-		}
-	}
-	sprintf(tmp_buff, "%d ARCS", i);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	update_header("OUTLINED ARC", "");
-	TFT_fillWindow(TFT_BLACK);
-	th = 8;
-	end_time = clock() + GDEMO_TIME;
-	i = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		if (x < y)
-			r = x - 4;
-		else
-			r = y - 4;
-		start = 0;
-		end = 350;
-		n = 1;
-		while (r > 10)
-		{
-			color = random_color();
-			fillcolor = random_color();
-			TFT_drawArc(x, y, r, th, start, end, color, fillcolor);
-			r -= (th + 2);
-			n++;
-			start += 20;
-			end -= n * 10;
-			i++;
-		}
-	}
-	sprintf(tmp_buff, "%d ARCS", i);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-}
-//-----------------------
-static void circle_demo()
-{
-	int x, y, r, n;
-
-	disp_header("CIRCLE DEMO");
-
-	uint32_t end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x = rand_interval(8, dispWin.x2 - 8);
-		y = rand_interval(8, dispWin.y2 - 8);
-		if (x < y)
-			r = rand_interval(2, x / 2);
-		else
-			r = rand_interval(2, y / 2);
-		TFT_drawCircle(x, y, r, random_color());
-		n++;
-	}
-	sprintf(tmp_buff, "%d CIRCLES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	update_header("FILLED CIRCLE", "");
-	TFT_fillWindow(TFT_BLACK);
-	end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x = rand_interval(8, dispWin.x2 - 8);
-		y = rand_interval(8, dispWin.y2 - 8);
-		if (x < y)
-			r = rand_interval(2, x / 2);
-		else
-			r = rand_interval(2, y / 2);
-		TFT_fillCircle(x, y, r, random_color());
-		TFT_drawCircle(x, y, r, random_color());
-		n++;
-	}
-	sprintf(tmp_buff, "%d CIRCLES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-}
-//------------------------
-static void ellipse_demo()
-{
-	int x, y, rx, ry, n;
-
-	disp_header("ELLIPSE DEMO");
-
-	uint32_t end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x = rand_interval(8, dispWin.x2 - 8);
-		y = rand_interval(8, dispWin.y2 - 8);
-		if (x < y)
-			rx = rand_interval(2, x / 4);
-		else
-			rx = rand_interval(2, y / 4);
-		if (x < y)
-			ry = rand_interval(2, x / 4);
-		else
-			ry = rand_interval(2, y / 4);
-		TFT_drawEllipse(x, y, rx, ry, random_color(), 15);
-		n++;
-	}
-	sprintf(tmp_buff, "%d ELLIPSES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	update_header("FILLED ELLIPSE", "");
-	TFT_fillWindow(TFT_BLACK);
-	end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x = rand_interval(8, dispWin.x2 - 8);
-		y = rand_interval(8, dispWin.y2 - 8);
-		if (x < y)
-			rx = rand_interval(2, x / 4);
-		else
-			rx = rand_interval(2, y / 4);
-		if (x < y)
-			ry = rand_interval(2, x / 4);
-		else
-			ry = rand_interval(2, y / 4);
-		TFT_fillEllipse(x, y, rx, ry, random_color(), 15);
-		TFT_drawEllipse(x, y, rx, ry, random_color(), 15);
-		n++;
-	}
-	sprintf(tmp_buff, "%d ELLIPSES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	update_header("ELLIPSE SEGMENTS", "");
-	TFT_fillWindow(TFT_BLACK);
-	end_time = clock() + GDEMO_TIME;
-	n = 0;
-	int k = 1;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x = rand_interval(8, dispWin.x2 - 8);
-		y = rand_interval(8, dispWin.y2 - 8);
-		if (x < y)
-			rx = rand_interval(2, x / 4);
-		else
-			rx = rand_interval(2, y / 4);
-		if (x < y)
-			ry = rand_interval(2, x / 4);
-		else
-			ry = rand_interval(2, y / 4);
-		TFT_fillEllipse(x, y, rx, ry, random_color(), (1 << k));
-		TFT_drawEllipse(x, y, rx, ry, random_color(), (1 << k));
-		k = (k + 1) & 3;
-		n++;
-	}
-	sprintf(tmp_buff, "%d SEGMENTS", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-}
-//-------------------------
-static void triangle_demo()
-{
-	int x1, y1, x2, y2, x3, y3, n;
-
-	disp_header("TRIANGLE DEMO");
-
-	uint32_t end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x1 = rand_interval(4, dispWin.x2 - 4);
-		y1 = rand_interval(4, dispWin.y2 - 2);
-		x2 = rand_interval(4, dispWin.x2 - 4);
-		y2 = rand_interval(4, dispWin.y2 - 2);
-		x3 = rand_interval(4, dispWin.x2 - 4);
-		y3 = rand_interval(4, dispWin.y2 - 2);
-		TFT_drawTriangle(x1, y1, x2, y2, x3, y3, random_color());
-		n++;
-	}
-	sprintf(tmp_buff, "%d TRIANGLES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	update_header("FILLED TRIANGLE", "");
-	TFT_fillWindow(TFT_BLACK);
-	end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		x1 = rand_interval(4, dispWin.x2 - 4);
-		y1 = rand_interval(4, dispWin.y2 - 2);
-		x2 = rand_interval(4, dispWin.x2 - 4);
-		y2 = rand_interval(4, dispWin.y2 - 2);
-		x3 = rand_interval(4, dispWin.x2 - 4);
-		y3 = rand_interval(4, dispWin.y2 - 2);
-		TFT_fillTriangle(x1, y1, x2, y2, x3, y3, random_color());
-		TFT_drawTriangle(x1, y1, x2, y2, x3, y3, random_color());
-		n++;
-	}
-	sprintf(tmp_buff, "%d TRIANGLES", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-}
-//---------------------
-static void poly_demo()
-{
-	uint16_t x, y, rot, oldrot;
-	int i, n, r;
-	uint8_t sides[6] = {3, 4, 5, 6, 8, 10};
-	color_t color[6] = {TFT_WHITE, TFT_CYAN, TFT_RED, TFT_BLUE, TFT_YELLOW, TFT_ORANGE};
-	color_t fill[6] = {TFT_BLUE, TFT_NAVY, TFT_DARKGREEN, TFT_DARKGREY, TFT_LIGHTGREY, TFT_OLIVE};
-
-	disp_header("POLYGON DEMO");
-
-	x = (dispWin.x2 - dispWin.x1) / 2;
-	y = (dispWin.y2 - dispWin.y1) / 2;
-
-	rot = 0;
-	oldrot = 0;
-	uint32_t end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		if (x < y)
-			r = x - 4;
-		else
-			r = y - 4;
-		for (i = 5; i >= 0; i--)
-		{
-			TFT_drawPolygon(x, y, sides[i], r, TFT_BLACK, TFT_BLACK, oldrot, 1);
-			TFT_drawPolygon(x, y, sides[i], r, color[i], color[i], rot, 1);
-			r -= 16;
-			if (r <= 0)
-			{
-				break;
-			}
-			n += 2;
-		}
-		Wait(100);
-		oldrot = rot;
-		rot = (rot + 15) % 360;
-	}
-	sprintf(tmp_buff, "%d POLYGONS", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-
-	update_header("FILLED POLYGON", "");
-	rot = 0;
-	end_time = clock() + GDEMO_TIME;
-	n = 0;
-	while ((clock() < end_time) && (Wait(0)))
-	{
-		if (x < y)
-			r = x - 4;
-		else
-			r = y - 4;
-		TFT_fillWindow(TFT_BLACK);
-		for (i = 5; i >= 0; i--)
-		{
-			TFT_drawPolygon(x, y, sides[i], r, color[i], fill[i], rot, 2);
-			r -= 16;
-			if (r <= 0)
-			{
-				break;
-			}
-			n += 2;
-		}
-		Wait(500);
-		rot = (rot + 15) % 360;
-	}
-	sprintf(tmp_buff, "%d POLYGONS", n);
-	update_header(NULL, tmp_buff);
-	Wait(-GDEMO_INFO_TIME);
-}
-//----------------------
-static void touch_demo()
-{
-#if USE_TOUCH
-	int tx, ty, ltx, lty, doexit = 0;
-
-	disp_header("TOUCH DEMO");
-	TFT_setFont(DEFAULT_FONT, NULL);
-	_fg = TFT_YELLOW;
-	TFT_print("Touch to draw", CENTER, 40);
-	TFT_print("Touch footer to clear", CENTER, 60);
-
-	ltx = -9999;
-	lty = -999;
-	while (1)
-	{
-		if (TFT_read_touch(&tx, &ty, 0))
-		{
-			// Touched
-			if (((tx >= dispWin.x1) && (tx <= dispWin.x2)) &&
-				((ty >= dispWin.y1) && (ty <= dispWin.y2)))
-			{
-				if ((doexit > 2) || ((abs(tx - ltx) < 5) && (abs(ty - lty) < 5)))
-				{
-					if (((abs(tx - ltx) > 0) || (abs(ty - lty) > 0)))
-					{
-						TFT_fillCircle(tx - dispWin.x1, ty - dispWin.y1, 4, random_color());
-						sprintf(tmp_buff, "%d,%d", tx, ty);
-						update_header(NULL, tmp_buff);
-					}
-					ltx = tx;
-					lty = ty;
-				}
-				doexit = 0;
-			}
-			else if (ty > (dispWin.y2 + 5))
-				TFT_fillWindow(TFT_BLACK);
-			else
-			{
-				doexit++;
-				if (doexit == 2)
-					update_header(NULL, "---");
-				if (doexit > 50)
-					return;
-				vTaskDelay(100 / portTICK_RATE_MS);
-			}
-		}
-		else
-		{
-			doexit++;
-			if (doexit == 2)
-				update_header(NULL, "---");
-			if (doexit > 50)
-				return;
-			vTaskDelay(100 / portTICK_RATE_MS);
-		}
-	}
-#endif
-}
-
-//===============
-void tft_demo()
-{
-
-	font_rotate = 0;
-	text_wrap = 0;
-	font_transparent = 0;
-	font_forceFixed = 0;
-	TFT_resetclipwin();
-
-	image_debug = 0;
-
-	char dtype[16];
-
-	switch (tft_disp_type)
-	{
-	case DISP_TYPE_ILI9341:
-		sprintf(dtype, "ILI9341");
-		break;
-	case DISP_TYPE_ILI9488:
-		sprintf(dtype, "ILI9488");
-		break;
-	case DISP_TYPE_ST7789V:
-		sprintf(dtype, "ST7789V");
-		break;
-	case DISP_TYPE_ST7735:
-		sprintf(dtype, "ST7735");
-		break;
-	case DISP_TYPE_ST7735R:
-		sprintf(dtype, "ST7735R");
-		break;
-	case DISP_TYPE_ST7735B:
-		sprintf(dtype, "ST7735B");
-		break;
-	default:
-		sprintf(dtype, "Unknown");
-	}
-
-	uint8_t disp_rot = PORTRAIT;
-	_demo_pass = 0;
-	gray_scale = 0;
-	doprint = 1;				
-
-	TFT_setRotation(disp_rot);
-	disp_header("ESP32 TFT DEMO");
-	TFT_setFont(COMIC24_FONT, NULL);
-	int tempy = TFT_getfontheight() + 4;
-	_fg = TFT_ORANGE;
-	TFT_print("ESP32", CENTER, (dispWin.y2 - dispWin.y1) / 2 - tempy);
-	TFT_setFont(UBUNTU16_FONT, NULL);
-	_fg = TFT_CYAN;
-	TFT_print("TFT Demo", CENTER, LASTY + tempy);
-	tempy = TFT_getfontheight() + 4;
-	TFT_setFont(DEFAULT_FONT, NULL);
-	_fg = TFT_GREEN;
-	sprintf(tmp_buff, "Read speed: %5.2f MHz", (float)max_rdclock / 1000000.0);
-	TFT_print(tmp_buff, CENTER, LASTY + tempy);
-
-	Wait(4000);
-
-	while (1)
-	{
-		if (run_gs_demo)
-		{
-			if (_demo_pass == 8)
-				doprint = 0;
-			// Change gray scale mode on every 2nd pass
-			gray_scale = _demo_pass & 1;
-			// change display rotation
-			if ((_demo_pass % 2) == 0)
-			{
-				_bg = TFT_BLACK;
-				TFT_setRotation(disp_rot);
-				disp_rot++;
-				disp_rot &= 3;
-			}
-		}
-		else
-		{
-			if (_demo_pass == 4)
-				doprint = 0;
-			// change display rotation
-			_bg = TFT_BLACK;
-			TFT_setRotation(disp_rot);
-		//	disp_rot++;							// comment this line to stop screen rotation per demo pass
-			disp_rot &= 3;
-		}
-
-		if (doprint)
-		{
-			if (disp_rot == 1)
-				sprintf(tmp_buff, "PORTRAIT");
-			if (disp_rot == 2)
-				sprintf(tmp_buff, "LANDSCAPE");
-			if (disp_rot == 3)
-				sprintf(tmp_buff, "PORTRAIT FLIP");
-			if (disp_rot == 0)
-				sprintf(tmp_buff, "LANDSCAPE FLIP");
-			printf("\r\n==========================================\r\nDisplay: %s: %s %d,%d %s\r\n\r\n",
-				   dtype, tmp_buff, _width, _height, ((gray_scale) ? "Gray" : "Color"));
-		}
-
-		disp_header("Welcome to ESP32");
-
-		test_times();
-		
-	//	font_demo();
-	//	line_demo();
-	//	aline_demo();
-	//	rect_demo();
-	//	circle_demo();
-	//	ellipse_demo();
-	//	arc_demo();
-	//	triangle_demo();
-	//	poly_demo();
-	//	pixel_demo();
-	//	disp_images();
-	//	touch_demo();
-
-		_demo_pass++;
-	}
-}
-
 /*
-// ================== TEST SD CARD ==========================================
-
-#include "esp_vfs_fat.h"
-#include "driver/sdmmc_host.h"
-#include "driver/sdspi_host.h"
-#include "sdmmc_cmd.h"
-
-// This example can use SDMMC and SPI peripherals to communicate with SD card.
-// SPI mode IS USED
-
-// When testing SD and SPI modes, keep in mind that once the card has been
-// initialized in SPI mode, it can not be reinitialized in SD mode without
-// toggling power to the card.
-
-// Pin mapping when using SPI mode.
-// With this mapping, SD card can be used both in SPI and 1-line SD mode.
-// Note that a pull-up on CS line is required in SD mode.
-#define sdPIN_NUM_MISO 19
-#define sdPIN_NUM_MOSI 18
-#define sdPIN_NUM_CLK  5
-#define sdPIN_NUM_CS   14
-
-static const char *TAG = "SDCard test";
-
-void test_sd_card(void)
-{
-    printf("\n=======================================================\n");
-    printf("===== Test using SD Card in SPI mode              =====\n");
-    printf("===== SD Card uses the same gpio's as TFT display =====\n");
-    printf("=======================================================\n\n");
-    ESP_LOGI(TAG, "Initializing SD card");
-    ESP_LOGI(TAG, "Using SPI peripheral");
-
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    sdspi_slot_config_t slot_config = SDSPI_SLOT_CONFIG_DEFAULT();
-    slot_config.gpio_miso = sdPIN_NUM_MISO;
-    slot_config.gpio_mosi = sdPIN_NUM_MOSI;
-    slot_config.gpio_sck  = sdPIN_NUM_CLK;
-    slot_config.gpio_cs   = sdPIN_NUM_CS;
-    // This initializes the slot without card detect (CD) and write protect (WP) signals.
-    // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
-
-    // Options for mounting the filesystem.
-    // If format_if_mount_failed is set to true, SD card will be partitioned and
-    // formatted in case when mounting fails.
-    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-        .format_if_mount_failed = false,
-        .max_files = 5
-    };
-
-    // Use settings defined above to initialize SD card and mount FAT filesystem.
-    // Note: esp_vfs_fat_sdmmc_mount is an all-in-one convenience function.
-    // Please check its source code and implement error recovery when developing
-    // production applications.
-    sdmmc_card_t* card;
-    esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
-
-    if (ret != ESP_OK) {
-        if (ret == ESP_FAIL) {
-            ESP_LOGE(TAG, "Failed to mount filesystem. "
-                "If you want the card to be formatted, set format_if_mount_failed = true.");
-        } else {
-            ESP_LOGE(TAG, "Failed to initialize the card (%d). "
-                "Make sure SD card lines have pull-up resistors in place.", ret);
-        }
-        return;
-    }
-
-    // Card has been initialized, print its properties
-    sdmmc_card_print_info(stdout, card);
-
-    // Use POSIX and C standard library functions to work with files.
-    // First create a file.
-    ESP_LOGI(TAG, "Opening file");
-    FILE* f = fopen("/sdcard/hello.txt", "w");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for writing");
-        return;
-    }
-    fprintf(f, "Hello %s!\n", card->cid.name);
-    fclose(f);
-    ESP_LOGI(TAG, "File written");
-
-    // Check if destination file exists before renaming
-    struct stat st;
-    if (stat("/sdcard/foo.txt", &st) == 0) {
-        // Delete it if it exists
-        unlink("/sdcard/foo.txt");
-    }
-
-    // Rename original file
-    ESP_LOGI(TAG, "Renaming file");
-    if (rename("/sdcard/hello.txt", "/sdcard/foo.txt") != 0) {
-        ESP_LOGE(TAG, "Rename failed");
-        return;
-    }
-
-    // Open renamed file for reading
-    ESP_LOGI(TAG, "Reading file");
-    f = fopen("/sdcard/foo.txt", "r");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for reading");
-        return;
-    }
-    char line[64];
-    fgets(line, sizeof(line), f);
-    fclose(f);
-    // strip newline
-    char* pos = strchr(line, '\n');
-    if (pos) {
-        *pos = '\0';
-    }
-    ESP_LOGI(TAG, "Read from file: '%s'", line);
-
-    // All done, unmount partition and disable SDMMC or SPI peripheral
-    esp_vfs_fat_sdmmc_unmount();
-    ESP_LOGI(TAG, "Card unmounted");
-
-    printf("===== SD Card test end ================================\n\n");
-}
-
-// ================== TEST SD CARD ==========================================
+	double TT;
+	TT = exp(abs(T));
+	printf("\nEXP((1/TO)-(1/T) * (L/Rv)): %f", TT );
 */
+	double TT = T;
+	TT = expl(abs(TT));
+	printf("\nEXP((1/TO)-(1/T) * (L/Rv)): %f", TT );
 
-//=============
+	dew_Es = dew_EO * TT;
+	printf("\ndew_Es: %f", dew_Es );
 
-//      FUNCTIONS       //
+//	printf("\nsize of char:  %d", sizeof(char));
+//	printf("\nsize of int:  %d", sizeof(int));
+//	printf("\nsize of double:  %d", sizeof(double));
+//	printf("\nsize of float:  %d", sizeof(float));
+//	printf("\nsize of long double:  %d", sizeof(long double));
+//	dew_Es = dew_EO * (exp((0.003663 - (1 / comp_data->temperature)) * 5423 ));
+//	printf( "\nDew_Es ie Saturation vapour pressure:  %f", dew_Es );
+}
+//==============================================================================
+
+//     BME280 & I2C FUNCTIONS       //
 
 void delay_ms(uint32_t period, void *intf_ptr)
 {
@@ -1581,8 +621,9 @@ int8_t    bme280_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, voi
     
     if( ret != ESP_OK )
         {
-            printf("\nfailed in read function\n");
-             rslt = 1;
+            printf("\nfailed in read function");
+			printf("\nError (%s) reading from sensor\n",esp_err_to_name(ret));
+            rslt = 1;
         }
         i2c_cmd_link_delete(cmd);
         return rslt;
@@ -1613,51 +654,7 @@ int8_t    bme280_i2c_write(uint8_t reg_addr, const uint8_t *data, uint32_t len, 
         return 1;
     }
 }
-
-// Formula	:	RH = 100% X (E/Es)		where E is vapour pressure & Es is saturation vapour pressure
-//				E =  EO * EXP( (L/Rv) * ((1/TO)-(1/Td)) )				
-//				Es = EO * EXP( (L/Rv) * ((1/TO)-(1/T)) )
-// Given  	:	EO = 0.611KPa; (L/Rv) = 5423 kelvin; TO = 273 Kelvin; (1/TO) = 0.003663;
-// Therefore:	
-const int dew_EO = 611;		// in Pa
-double dew_Es = 0;
-const uint16_t LRv = 5423;
-
-void dew_from_humidity(struct bme280_data *comp_data)
-{
-	printf("\nTemp: %f", comp_data->temperature );
-	float T = (1 / comp_data->temperature);
-	printf("\n1/Temp: %f", T );
-
-	T = 0.003663 - T;
-	printf("\n(1/TO)-(1/T): %f", T );
-
-	T *= LRv;
-	printf("\n (1/TO)-(1/T) * (L/Rv): %f", T );
-	
-/*
-	double TT;
-	TT = exp(abs(T));
-	printf("\nEXP((1/TO)-(1/T) * (L/Rv)): %f", TT );
-*/
-	double TT = T;
-	TT = expl(abs(TT));
-	printf("\nEXP((1/TO)-(1/T) * (L/Rv)): %f", TT );
-
-	dew_Es = dew_EO * TT;
-	printf("\ndew_Es: %f", dew_Es );
-
-//	printf("\nsize of char:  %d", sizeof(char));
-//	printf("\nsize of int:  %d", sizeof(int));
-//	printf("\nsize of double:  %d", sizeof(double));
-//	printf("\nsize of float:  %d", sizeof(float));
-//	printf("\nsize of long double:  %d", sizeof(long double));
-//	dew_Es = dew_EO * (exp((0.003663 - (1 / comp_data->temperature)) * 5423 ));
-//	printf( "\nDew_Es ie Saturation vapour pressure:  %f", dew_Es );
-}
-
-
-int8_t bme280_setup(struct bme280_dev *dev)
+int8_t 	  bme280_setup(struct bme280_dev *dev)
 {
     int8_t rslt;
     uint8_t dev_addr = I2C_DEVICE_ADDRESS;
@@ -1669,19 +666,41 @@ int8_t bme280_setup(struct bme280_dev *dev)
     rslt = bme280_init( dev );
     return rslt;
 }
-void   print_sensor_data(struct bme280_data *comp_data)
+
+int32_t GmaxTemp = 0;
+int32_t GminTemp = 0x7FFFFFFF;					//MaxValue 
+esp_err_t save_limits_temperature(void); 		//forward dec
+void   	  print_sensor_data(struct bme280_data *comp_data)
 {
 #ifdef BME280_FLOAT_ENABLE
+
+	//printf("Free Heap size: %d \n",xPortGetFreeHeapSize());
 
 		update_header(NULL, "");		// increments count in info footer
        // printf("%0.2f, %0.2f, %0.2f\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
 		
+		int32_t temp = comp_data->temperature;
+		if( temp  > GmaxTemp )
+		{
+			GmaxTemp = comp_data->temperature;
+		}
+		if( temp < GminTemp )
+		{
+			GminTemp = comp_data->temperature;
+		}
+		save_limits_temperature();
+	
 		TFT_setFont(DEJAVU18_FONT, NULL);
 		int x = 10;
 		int y =  TFT_getfontheight() + 4;
 		_fg = TFT_WHITE;
 	//	TFT_setFont(DEJAVU18_FONT, NULL);
 		sprintf(tmp_buff,"Temperature: %0.2f",comp_data->temperature);
+		TFT_print(tmp_buff, x, y);
+		y += TFT_getfontheight() + 4;
+	
+	//	TFT_setFont(DEJAVU18_FONT, NULL);
+		sprintf(tmp_buff,"Max/MinTemp: %d / %d", GmaxTemp, GminTemp);
 		TFT_print(tmp_buff, x, y);
 		y += TFT_getfontheight() + 4;
 
@@ -1695,11 +714,11 @@ void   print_sensor_data(struct bme280_data *comp_data)
 		TFT_print(tmp_buff, x, y);
 		y += (TFT_getfontheight() + 4);
 
-
 		uint32_t AdcResult = getAdc();
+	
 	//	TFT_setFont(DEJAVU18_FONT, NULL);
 		sprintf(tmp_buff,"Bar Graph: %d", AdcResult );
-
+	
 		if( strlen(tmp_buff) < strlen(tmp_buff_last) )
 		{
 			_fg = TFT_BLACK;
@@ -1708,8 +727,7 @@ void   print_sensor_data(struct bme280_data *comp_data)
 		}
 		TFT_print(tmp_buff, x, y);
 		sprintf(tmp_buff_last, tmp_buff);
-
-		
+	
 		y += (TFT_getfontheight() + 4);				// this section calculates the color based on adc result
 		x = 10;
 		color_t myColor = {255, 255, 255};
@@ -1732,42 +750,50 @@ void   print_sensor_data(struct bme280_data *comp_data)
 		}
 		// Flush RGB values to LEDs
 		ESP_ERROR_CHECK(strip->refresh(strip, 100)); 
-	//	vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
+		//vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
 		//strip->clear(strip, 50);
 		//vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
-		
-
+	
 
 #else
         printf("%ld, %ld, %ld\r\n",comp_data->temperature, comp_data->pressure, comp_data->humidity);
 #endif
 }
-int8_t stream_sensor_data_normal_mode(struct bme280_dev *dev)
+void 	  stream_sensor_data_normal_mode(void *ignore)
 {
 	int8_t rslt;
 	uint8_t settings_sel;
 	struct bme280_data comp_data;
 
+	struct bme280_dev dev;                                  //Structure to hold bme interface pointers. used in bme280_setup(&dev), USED TO OPPERATE THE BME280 CHIP
+    ESP_ERROR_CHECK(i2c_master_init());                     // initiate I2C buss
+    rslt = bme280_setup(&dev);                       		// set up bme280 interface
+    if (rslt != BME280_OK)
+        {
+            printf( "Failed to set up bme280 (code %+d).", rslt);
+    
+        }
+
 	/* Recommended mode of operation: Indoor navigation */
-	dev->settings.osr_h = BME280_OVERSAMPLING_1X;
-	dev->settings.osr_p = BME280_OVERSAMPLING_16X;
-	dev->settings.osr_t = BME280_OVERSAMPLING_2X;
-	dev->settings.filter = BME280_FILTER_COEFF_16;
-	dev->settings.standby_time = BME280_STANDBY_TIME_62_5_MS;
+	dev.settings.osr_h = BME280_OVERSAMPLING_1X;
+	dev.settings.osr_p = BME280_OVERSAMPLING_16X;
+	dev.settings.osr_t = BME280_OVERSAMPLING_2X;
+	dev.settings.filter = BME280_FILTER_COEFF_16;
+	dev.settings.standby_time = BME280_STANDBY_TIME_62_5_MS;
 
 	settings_sel = BME280_OSR_PRESS_SEL;
 	settings_sel |= BME280_OSR_TEMP_SEL;
 	settings_sel |= BME280_OSR_HUM_SEL;
 	settings_sel |= BME280_STANDBY_SEL;
 	settings_sel |= BME280_FILTER_SEL;
-	rslt = bme280_set_sensor_settings(settings_sel, dev);
-	rslt = bme280_set_sensor_mode(BME280_NORMAL_MODE, dev);
+	rslt = bme280_set_sensor_settings(settings_sel, &dev);
+	rslt = bme280_set_sensor_mode(BME280_NORMAL_MODE, &dev);
 
 	printf("Temperature, Pressure, Humidity\r\n");
 	while (1) {
 		/* Delay while the sensor completes a measurement */
-		dev->delay_us(70000, dev->intf_ptr);
-		rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
+		dev.delay_us(70000, dev.intf_ptr);
+		rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, &dev);
         if (rslt != BME280_OK)
         {
             printf( "Failed to get sensor data (code %+d).", rslt);
@@ -1775,37 +801,46 @@ int8_t stream_sensor_data_normal_mode(struct bme280_dev *dev)
         }
 		print_sensor_data(&comp_data);
 	}
-
-	return rslt;
+	vTaskDelete(NULL);
+	//return rslt;
 }
-int8_t stream_sensor_data_forced_mode(struct bme280_dev *dev)
+void 	  stream_sensor_data_forced_mode(void *ignore)
 {
     int8_t rslt;
     uint8_t settings_sel;
 	uint32_t req_delay;
     struct bme280_data comp_data;
 
+	struct bme280_dev dev;                                  //Structure to hold bme interface pointers. used in bme280_setup(&dev), USED TO OPPERATE THE BME280 CHIP
+    ESP_ERROR_CHECK(i2c_master_init());                     // initiate I2C buss
+    rslt = bme280_setup(&dev);                       		// set up bme280 interface
+    if (rslt != BME280_OK)
+        {
+            printf( "Failed to set up bme280 (code %+d).", rslt);
+    
+        }
+
     /* Recommended mode of operation: Indoor navigation */
-    dev->settings.osr_h = BME280_OVERSAMPLING_1X;
-    dev->settings.osr_p = BME280_OVERSAMPLING_16X;
-    dev->settings.osr_t = BME280_OVERSAMPLING_2X;
-    dev->settings.filter = BME280_FILTER_COEFF_16;
+    dev.settings.osr_h = BME280_OVERSAMPLING_1X;
+    dev.settings.osr_p = BME280_OVERSAMPLING_16X;
+    dev.settings.osr_t = BME280_OVERSAMPLING_2X;
+    dev.settings.filter = BME280_FILTER_COEFF_16;
 
     settings_sel = BME280_OSR_PRESS_SEL | BME280_OSR_TEMP_SEL | BME280_OSR_HUM_SEL | BME280_FILTER_SEL;
 
-    rslt = bme280_set_sensor_settings(settings_sel, dev);
+    rslt = bme280_set_sensor_settings(settings_sel, &dev);
 	
 	/*Calculate the minimum delay required between consecutive measurement based upon the sensor enabled
      *  and the oversampling configuration. */
-    req_delay = bme280_cal_meas_delay(&dev->settings);
+    req_delay = bme280_cal_meas_delay(&dev.settings);
     req_delay *= 1000;                                                  // seems the program need longer than it thinks. there seems to be some issue between mil sec and micro sec
     printf("Temperature, Pressure, Humidity\r\n");
     /* Continuously stream sensor data */
     while (1) {
-        rslt = bme280_set_sensor_mode(BME280_FORCED_MODE, dev);
+        rslt = bme280_set_sensor_mode(BME280_FORCED_MODE, &dev);
         /* Wait for the measurement to complete and print data @25Hz */
-        dev->delay_us(req_delay, dev->intf_ptr);
-        rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
+        dev.delay_us(req_delay, dev.intf_ptr);
+        rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, &dev);
         if (rslt != BME280_OK)
         {
             printf( "Failed to get sensor data (code %+d).", rslt);
@@ -1813,14 +848,23 @@ int8_t stream_sensor_data_forced_mode(struct bme280_dev *dev)
         }
         print_sensor_data(&comp_data);
     }
-    return rslt;
+	vTaskDelete(NULL);
+	//return rslt;
 }
-
-int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
+int8_t 	  stream_sensor_data_normal_tft()
 {	
 	int8_t rslt;
-	uint8_t settings_sel;	struct bme280_data comp_data;
+	uint8_t settings_sel;
+	struct bme280_data comp_data;
 
+	struct bme280_dev dev;                                  //Structure to hold bme interface pointers. used in bme280_setup(&dev), USED TO OPPERATE THE BME280 CHIP
+    ESP_ERROR_CHECK(i2c_master_init());                     // initiate I2C buss
+    rslt = bme280_setup(&dev);                       		// set up bme280 interface
+    if (rslt != BME280_OK)
+        {
+            printf( "Failed to set up bme280 (code %+d).", rslt);
+    
+        }
 
 	font_rotate = 0;
 	text_wrap = 0;
@@ -1857,7 +901,7 @@ int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
 	}
 
 	uint8_t disp_rot = LANDSCAPE;
-	_demo_pass = 0;
+	//_demo_pass = 0;
 	gray_scale = 0;
 	doprint = 1;				
 
@@ -1920,11 +964,11 @@ int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
 
 
 		/* Recommended mode of operation: Indoor navigation */
-		dev->settings.osr_h = BME280_OVERSAMPLING_1X;
-		dev->settings.osr_p = BME280_OVERSAMPLING_16X;
-		dev->settings.osr_t = BME280_OVERSAMPLING_2X;
-		dev->settings.filter = BME280_FILTER_COEFF_16;
-		dev->settings.standby_time = BME280_STANDBY_TIME_62_5_MS;
+		dev.settings.osr_h = BME280_OVERSAMPLING_1X;
+		dev.settings.osr_p = BME280_OVERSAMPLING_16X;
+		dev.settings.osr_t = BME280_OVERSAMPLING_2X;
+		dev.settings.filter = BME280_FILTER_COEFF_16;
+		dev.settings.standby_time = BME280_STANDBY_TIME_62_5_MS;
 
 		settings_sel = BME280_OSR_PRESS_SEL;
 		settings_sel |= BME280_OSR_TEMP_SEL;
@@ -1932,34 +976,34 @@ int8_t stream_sensor_data_normal_tft(struct bme280_dev *dev)
 		settings_sel |= BME280_STANDBY_SEL;
 		settings_sel |= BME280_FILTER_SEL;
 
-		rslt = bme280_set_sensor_settings(settings_sel, dev);
-		rslt = bme280_set_sensor_mode(BME280_NORMAL_MODE, dev);
+		rslt = bme280_set_sensor_settings(settings_sel, &dev);
+		rslt = bme280_set_sensor_mode(BME280_NORMAL_MODE, &dev);
 			 
 		disp_header("Getting DATA");
-		printf("Temperature, Pressure, Humidity\r\n");
+	//	printf("Temperature, Pressure, Humidity\r\n");
 		while (1) 
 		{
 			/* Delay while the sensor completes a measurement */
-			dev->delay_us(70000, dev->intf_ptr);
-			rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, dev);
+			dev.delay_us(70000, dev.intf_ptr);
+			rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, &dev);
 			if (rslt != BME280_OK)
 			{
-				printf( "Failed to get sensor data (code %+d).", rslt);
+				printf( "Failed to get sensor data (code %+d).\n", rslt);
 				break;
 			}
-			dew_from_humidity(&comp_data);
+		//	dew_from_humidity(&comp_data);
+		//printf("Free Heap size: %d \n",xPortGetFreeHeapSize());
 			print_sensor_data(&comp_data);
 		//	Wait(-GDEMO_INFO_TIME);
 		
-		}	
-		return rslt;
+		}
+		//vTaskDelete(NULL);
+		return rslt;	
+
 	}
 }
-
-void print_chip_info()
+void 	  print_chip_info()
 {
-     printf("Hello world!\n");
-
     /* Print chip information */
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
@@ -1984,37 +1028,208 @@ void print_chip_info()
    // esp_restart();
 };
 
+/* Save the Max/Min temperatures in NVS
+   by first reading and then comparing
+   the number that has been saved previously
+   to determin if a write is necessary.
+   Return an error if anything goes wrong
+   during this process.
+ */
+esp_err_t save_limits_temperature(void)
+{
+	nvs_handle_t my_handle;
+    esp_err_t err;
+
+    // Open
+    err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &my_handle);
+    if (err != ESP_OK) return err;
+
+    // Read
+    int32_t Smax_temp = 0; // value will default to 0, if not set yet in NVS
+	int32_t Smin_temp = 0;
+
+    err = nvs_get_i32(my_handle, "Smax_temp", &Smax_temp);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return err;
+	if( Smax_temp < GmaxTemp )
+	{
+		// Write
+		Smax_temp = GmaxTemp;
+		err = nvs_set_i32(my_handle, "Smax_temp", Smax_temp);
+		if (err != ESP_OK) return err;
+
+		// Commit written value.
+		// After setting any values, nvs_commit() must be called to ensure changes are written
+		// to flash storage. Implementations may write to storage at other times,
+		// but this is not guaranteed.
+		err = nvs_commit(my_handle);
+		if (err != ESP_OK) return err;
+	}
+	if( Smax_temp > GmaxTemp )
+	{
+		GmaxTemp = Smax_temp;
+	}
+
+	err = nvs_get_i32(my_handle, "Smin_temp", &Smin_temp);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return err;
+	if( Smin_temp > GminTemp )
+	{
+		// Write
+		Smin_temp = GminTemp;
+		err = nvs_set_i32(my_handle, "Smin_temp", Smin_temp);
+		if (err != ESP_OK) return err;
+
+		// Commit written value.
+		// After setting any values, nvs_commit() must be called to ensure changes are written
+		// to flash storage. Implementations may write to storage at other times,
+		// but this is not guaranteed.
+		err = nvs_commit(my_handle);
+		if (err != ESP_OK) return err;
+	}
+	if( Smin_temp < GminTemp && Smin_temp != 0 )
+	{
+		GminTemp = Smin_temp;
+	}
+
+    // Close
+    nvs_close(my_handle);
+    return ESP_OK;
+}
+
+/* Save the number of module restarts in NVS
+   by first reading and then incrementing
+   the number that has been saved previously.
+   Return an error if anything goes wrong
+   during this process.
+ */
+esp_err_t save_restart_counter(void)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err;
+
+    // Open
+    err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &my_handle);
+    if (err != ESP_OK) return err;
+
+    // Read
+    int32_t restart_counter = 0; // value will default to 0, if not set yet in NVS
+    err = nvs_get_i32(my_handle, "restart_conter", &restart_counter);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return err;
+
+    // Write
+    restart_counter++;
+    err = nvs_set_i32(my_handle, "restart_conter", restart_counter);
+    if (err != ESP_OK) return err;
+
+    // Commit written value.
+    // After setting any values, nvs_commit() must be called to ensure changes are written
+    // to flash storage. Implementations may write to storage at other times,
+    // but this is not guaranteed.
+    err = nvs_commit(my_handle);
+    if (err != ESP_OK) return err;
+
+    // Close
+    nvs_close(my_handle);
+    return ESP_OK;
+}
+/* Save new run time value in NVS
+   by first reading a table of previously saved values
+   and then adding the new value at the end of the table.
+   Return an error if anything goes wrong
+   during this process.
+ */
+esp_err_t save_run_time(void)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err;
+
+    // Open
+    err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &my_handle);
+    if (err != ESP_OK) return err;
+
+    // Read the size of memory space required for blob
+    size_t required_size = 0;  // value will default to 0, if not set yet in NVS
+    err = nvs_get_blob(my_handle, "run_time", NULL, &required_size);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return err;
+
+    // Read previously saved blob if available
+    uint32_t* run_time = malloc(required_size + sizeof(uint32_t));
+    if (required_size > 0) {
+        err = nvs_get_blob(my_handle, "run_time", run_time, &required_size);
+        if (err != ESP_OK) {
+            free(run_time);
+            return err;
+        }
+    }
+
+    // Write value including previously saved blob if available
+    required_size += sizeof(uint32_t);
+    run_time[required_size / sizeof(uint32_t) - 1] = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    err = nvs_set_blob(my_handle, "run_time", run_time, required_size);
+    free(run_time);
+
+    if (err != ESP_OK) return err;
+
+    // Commit
+    err = nvs_commit(my_handle);
+    if (err != ESP_OK) return err;
+
+    // Close
+    nvs_close(my_handle);
+    return ESP_OK;
+}
+/* Read from NVS and print restart counter
+   and the table with run times.
+   Return an error if anything goes wrong
+   during this process.
+ */
+esp_err_t print_what_saved(void)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err;
+
+    // Open
+    err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &my_handle);
+    if (err != ESP_OK) return err;
+
+    // Read restart counter
+    int32_t restart_counter = 0; // value will default to 0, if not set yet in NVS
+    err = nvs_get_i32(my_handle, "restart_conter", &restart_counter);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return err;
+    printf("Restart counter = %d\n", restart_counter);
+
+    // Read run time blob
+    size_t required_size = 0;  // value will default to 0, if not set yet in NVS
+    // obtain required memory space to store blob being read from NVS
+    err = nvs_get_blob(my_handle, "run_time", NULL, &required_size);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return err;
+    printf("Run time:\n");
+    if (required_size == 0) {
+        printf("Nothing saved yet!\n");
+    } else {
+        uint32_t* run_time = malloc(required_size);
+        err = nvs_get_blob(my_handle, "run_time", run_time, &required_size);
+        if (err != ESP_OK) {
+            free(run_time);
+            return err;
+        }
+        for (int i = 0; i < required_size / sizeof(uint32_t); i++) {
+            printf("%d: %d\n", i + 1, run_time[i]);
+        }
+        free(run_time);
+    }
+
+    // Close
+    nvs_close(my_handle);
+    return ESP_OK;
+}
 
 void app_main(void)
 {
-	
-    struct bme280_dev dev;                                  //Structure to hold bme interface pointers. used in bme280_setup(&dev), USED TO OPPERATE THE BME280 CHIP
-    ESP_ERROR_CHECK(i2c_master_init());                     // initiate I2C buss
-    int8_t rslt = bme280_setup(&dev);                       // set up bme280 interface
-    if (rslt != BME280_OK)
-        {
-            printf( "Failed to set up bme280 (code %+d).", rslt);
-    
-        }
-    print_chip_info();                                      // print usefull ESP chip info
-/*
-    rslt = stream_sensor_data_normal_mode(&dev);
-    //rslt = stream_sensor_data_forced_mode(&dev);
-    if (rslt != BME280_OK)
-    {
-        printf( "Failed to stream sensor data (code %+d).\n", rslt);
-        exit(1);
-    }
-*/
-
-
 	// ======== DISPLAY INITIALIZATION  =========
-
 	esp_err_t ret;
+	// ======== SET GLOBAL VARIABLES ==========================
 
-	// === SET GLOBAL VARIABLES ==========================
-
-	// ===================================================
+	// ========= DISPLAY TYPE ==========================================
 	// ==== Set display type                         =====
 	tft_disp_type = DEFAULT_DISP_TYPE;
 	//tft_disp_type = DISP_TYPE_ILI9341;
@@ -2022,7 +1237,7 @@ void app_main(void)
 	//tft_disp_type = DISP_TYPE_ST7735B;
 	// ===================================================
 
-	// ===================================================
+	// ========= DISPLAY RESOLUTION ==========================================
 	// === Set display resolution if NOT using default ===
 	// === DEFAULT_TFT_DISPLAY_WIDTH &                 ===
 	// === DEFAULT_TFT_DISPLAY_HEIGHT                  ===
@@ -2032,22 +1247,20 @@ void app_main(void)
 	//_height = 160; // larger dimension
 	// ===================================================
 
-	// ===================================================
+	// ========== SPI CLOCK =========================================
 	// ==== Set maximum spi clock for display read    ====
 	//      operations, function 'find_rd_speed()'    ====
 	//      can be used after display initialization  ====
 	max_rdclock = 8000000;
 	// ===================================================
 
-	// ====================================================================
+	// =========== TFT PINS INITILISATION =========================================================
 	// === Pins MUST be initialized before SPI interface initialization ===
 	// ====================================================================
 	TFT_PinsInit();
 
 	// ====  CONFIGURE SPI DEVICES(s)  ====================================================================================
-
 	spi_lobo_device_handle_t spi;
-
 	spi_lobo_bus_config_t buscfg = {
 		.miso_io_num = PIN_NUM_MISO, // set SPI MISO pin
 		.mosi_io_num = PIN_NUM_MOSI, // set SPI MOSI pin
@@ -2226,18 +1439,25 @@ void app_main(void)
 	}
 	Wait(-2000);
 */
-	//=========
-	// Run demo
-	//=========
-	//tft_demo();
 
-	uint32_t red = 0;
-    uint32_t green = 0;
-    uint32_t blue = 0;
-    uint16_t hue = 0;
-    uint16_t start_rgb = 0;
 
-    rmt_config_t config = RMT_DEFAULT_CONFIG_TX(CONFIG_LED_RMT_TX_GPIO, LED_RMT_TX_CHANNEL);
+// =============== START OF MY INITILISATIONS ===================================================
+
+// Initialize NVS
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) 
+	{
+        // NVS partition was truncated and needs to be erased
+        // Retry nvs_flash_init
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK( err );
+
+
+// =============== WS280 INITILISATION ===================================================
+	// ==== Initialize the WS280 led/pixel chain ====
+   rmt_config_t config = RMT_DEFAULT_CONFIG_TX(CONFIG_LED_RMT_TX_GPIO, LED_RMT_TX_CHANNEL);
     // set counter clock to 40MHz
     config.clk_div = 2;
 
@@ -2246,45 +1466,67 @@ void app_main(void)
 
     // install ws2812 driver
     led_strip_config_t strip_config = LED_STRIP_DEFAULT_CONFIG(CONFIG_STRIP_LED_NUMBER, (led_strip_dev_t)config.channel);
-   /* led_strip_t *strip*/ strip = led_strip_new_rmt_ws2812(&strip_config);
-    if (!strip) {
+   // led_strip_t *strip 
+   strip = led_strip_new_rmt_ws2812(&strip_config);
+  
+    if (!strip) 
+	{
         ESP_LOGE(TAG, "install WS2812 driver failed");
     }
 	
     // Clear LED strip (turn off all LEDs)
     ESP_ERROR_CHECK(strip->clear(strip, 100));
     // Show simple rainbow chasing pattern
-    ESP_LOGI(TAG, "LED Rainbow Chase Start");
+    ESP_LOGI(TAG, "LED Test");
+	
+	uint32_t red = 0;
+    uint32_t green = 0;
+    uint32_t blue = 0;
+    uint16_t hue = 0;
+    uint16_t start_rgb = 0;
 
-        for (int i = 0; i < 30; i++)
-        {
-            for (int j = i; j < CONFIG_STRIP_LED_NUMBER; j += 3)
-            {
-                // Build RGB values
-                hue = j * 360 / CONFIG_STRIP_LED_NUMBER + start_rgb;
-                led_strip_hsv2rgb(hue, 100, 100, &red, &green, &blue);
-                // Write RGB values to strip driver
-                ESP_ERROR_CHECK(strip->set_pixel(strip, j, 255, 0, 0));
-            }
-            // Flush RGB values to LEDs
-            ESP_ERROR_CHECK(strip->refresh(strip, 100)); 
-            vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
-            strip->clear(strip, 50);
-            vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
+	for (int i = 0; i < CONFIG_STRIP_LED_NUMBER; i++)
+	{
+		for (int j = i; j < CONFIG_STRIP_LED_NUMBER; j += 1)
+		{
+			// Write RGB values to strip driver
+			ESP_ERROR_CHECK(strip->set_pixel(strip, j, 255, 0, 0));
 		}
-        start_rgb += 60;
-    
+		// Flush RGB values to LEDs
+		ESP_ERROR_CHECK(strip->refresh(strip, 100)); 
+		vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
+		strip->clear(strip, 50);
+		vTaskDelay(pdMS_TO_TICKS(LED_CHASE_SPEED_MS));
+	}
 
+	print_chip_info();                                      // print usefull ESP chip info
 
+//	xTaskCreate(&stream_sensor_data_normal_tft, "BME280 + WS280 + LCD",  2048, NULL, 5, NULL);
+//	xTaskCreate(&stream_sensor_data_normal_mode, "BME280 + WS280 + LCD",  2048, NULL, 6, NULL);
+//	xTaskCreate(&stream_sensor_data_forced_mode, "BME280 + WS280 + LCD",  2048, NULL, 6, NULL);
+	
+	err = print_what_saved();
+    if (err != ESP_OK) printf("Error (%s) reading data from NVS!\n", esp_err_to_name(err));
 
-	rslt = stream_sensor_data_normal_tft(&dev);
-    //rslt = stream_sensor_data_forced_mode(&dev);
+    err = save_restart_counter();
+    if (err != ESP_OK) printf("Error (%s) saving restart counter to NVS!\n", esp_err_to_name(err));
+
+// To convert the bme280 functions back (NON task version) 
+// Replace the return type of the function with int8_t
+// Un comment return rslt and comment the line vTaskDelete(NULL) 
+// Their the final two lines in each function
+// then use bellow code to call function 	
+	int8_t rslt = stream_sensor_data_normal_tft();
+    //rslt = stream_sensor_data_forced_mode();
     if (rslt != BME280_OK)
     {
         printf( "Failed to stream sensor data (code %+d).\n", rslt);
+
+		err = save_run_time();
+        if (err != ESP_OK) printf("Error (%s) saving run time blob to NVS!\n", esp_err_to_name(err));
+
         exit(1);
     }
-
 
 }
 

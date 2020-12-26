@@ -17,6 +17,13 @@
     "sstream": "c",
     "cstdlib": "cpp",
     "*.ipp": "cpp",
-    "ratio": "c"
+    "ratio": "c",
+    "*.tcc": "cpp",
+    "fstream": "cpp",
+    "iosfwd": "cpp",
+    "istream": "cpp",
+    "limits": "cpp",
+    "streambuf": "cpp",
+    "*.inc": "cpp"
   }
 }
